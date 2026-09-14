@@ -1,69 +1,162 @@
-import Image from "next/image";
+"use client";
+
+import { useState } from "react";
+import { ChatView } from "@/components/ChatView";
+import { CommitmentGate } from "@/components/CommitmentGate";
+import { FrameForm } from "@/components/FrameForm";
+import { Scorecard, type Grade } from "@/components/Scorecard";
+import type { Commitment, Frame } from "@/lib/decision";
+import { DIMENSION_COUNT } from "@/lib/rubric";
+import { STAGES, STAGE_LABELS, type Stage } from "@/lib/stages";
+import { assistantTurns, type TranscriptMessage } from "@/lib/transcript";
+
+/** "complete" is an end state rather than a step, so it is not on the rail. */
+const RAIL = STAGES.filter((stage) => stage !== "complete");
 
 export default function Home() {
+  const [phase, setPhase] = useState<Stage>("frame");
+  const [frame, setFrame] = useState<Frame | null>(null);
+  const [transcript, setTranscript] = useState<TranscriptMessage[]>([]);
+  const [commitment, setCommitment] = useState<Commitment | null>(null);
+  const [grade, setGrade] = useState<Grade | null>(null);
+  const [pending, setPending] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  /**
+   * The assistant signals two transitions itself: that it has probed enough,
+   * and that the recommendation is delivered. Everything else is driven here.
+   */
+  function handleStage(next: Stage) {
+    if (next === "commit" && phase === "probe") setPhase("commit");
+    if (next === "complete" && phase === "recommend") setPhase("complete");
+  }
+
+  /** The opening turn is the frame phase; after it lands, questions begin. */
+  function handleTurnComplete() {
+    if (phase === "frame") setPhase("probe");
+  }
+
+  async function requestGrade(recorded: Commitment) {
+    if (!frame) return;
+    setPending(true);
+    setFailure(null);
+    setCommitment(recorded);
+    try {
+      const response = await fetch("/api/grade", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ frame, commitment: recorded, transcript }),
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) {
+        setCommitment(null);
+        setFailure(
+          response.status === 429
+            ? "The AI service has hit its request limit. Wait a minute and try again."
+            : ((body as { reason?: string } | null)?.reason ??
+              "The grade could not be produced. Try again."),
+        );
+        return;
+      }
+      setGrade(body as Grade);
+      setPhase("grade");
+    } catch {
+      setCommitment(null);
+      setFailure("The grade could not be produced. Try again.");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  const conversational =
+    frame !== null && (phase === "frame" || phase === "probe" || phase === "recommend" || phase === "complete");
+
+  // The assistant usually signals that it has asked enough. This is the manual
+  // way through when it keeps going: the gate is the question count, not the
+  // marker, so letting the person move on cannot skip past the real guard.
+  const canForceCommit =
+    phase === "probe" && assistantTurns(transcript) >= DIMENSION_COUNT;
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
+    <main className="mx-auto flex h-dvh max-w-3xl flex-col px-5 py-8">
+      {frame ? (
+        <ol className="mb-4 flex shrink-0 gap-2 text-xs" aria-label="Progress">
+          {RAIL.map((step) => {
+            const reached = STAGES.indexOf(phase) >= STAGES.indexOf(step);
+            return (
+              <li
+                key={step}
+                aria-current={phase === step ? "step" : undefined}
+                className={`flex-1 border-t-2 pt-2 ${
+                  reached
+                    ? "border-neutral-900 text-neutral-900 dark:border-neutral-100 dark:text-neutral-100"
+                    : "border-neutral-200 text-neutral-400 dark:border-neutral-800"
+                }`}
+              >
+                {STAGE_LABELS[step]}
+              </li>
+            );
+          })}
+        </ol>
+      ) : null}
+
+      <div className="flex min-h-0 flex-1 flex-col justify-center">
+        {!frame ? <FrameForm onSubmit={setFrame} /> : null}
+
+        {conversational && frame ? (
+          <div className="flex min-h-0 flex-1 flex-col">
+            <ChatView
+              phase={phase}
+              frame={frame}
+              commitment={commitment ?? undefined}
+              grade={grade?.dimensions}
+              transcript={transcript}
+              setTranscript={setTranscript}
+              onStage={handleStage}
+              onReady={handleTurnComplete}
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+            {canForceCommit ? (
+              <button
+                type="button"
+                onClick={() => setPhase("commit")}
+                className="mt-3 shrink-0 self-start text-sm text-neutral-500 underline underline-offset-4 hover:text-neutral-900 dark:hover:text-neutral-100"
+              >
+                I&apos;ve said enough — take me to the grade
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+
+        {phase === "commit" && frame ? (
+          <div className="overflow-y-auto py-4">
+            <CommitmentGate
+              frame={frame}
+              pending={pending}
+              onSubmit={requestGrade}
+            />
+          </div>
+        ) : null}
+
+        {phase === "grade" && grade && commitment ? (
+          <div className="overflow-y-auto py-4">
+            <Scorecard
+              grade={grade}
+              commitment={commitment}
+              pending={pending}
+              onContinue={() => setPhase("recommend")}
+            />
+          </div>
+        ) : null}
+
+        {failure ? (
+          <p
+            role="alert"
+            className="mx-auto mt-4 w-full max-w-xl text-sm text-red-700 dark:text-red-400"
           >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+            {failure}
+          </p>
+        ) : null}
+      </div>
+    </main>
   );
 }
