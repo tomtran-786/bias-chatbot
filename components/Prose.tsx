@@ -9,15 +9,31 @@
  * full markdown parser would be a dependency and a streaming hazard for a
  * handful of shapes the protocol actually specifies.
  */
+/** `*italic*` inside a run that is already known not to be bold. */
+function italics(text: string, keyPrefix: string) {
+  return text.split(/\*(.+?)\*/g).map((part, index) =>
+    index % 2 === 1 ? (
+      <em key={`${keyPrefix}-i${index}`} className="italic">
+        {part}
+      </em>
+    ) : (
+      part
+    ),
+  );
+}
+
+/**
+ * Bold first, then italics inside what is left. Doing it in one pass would let
+ * the italic pattern eat the inner asterisks of a bold span.
+ */
 function inline(text: string, keyPrefix: string) {
-  // Split on **bold** spans, keeping the delimited contents.
   return text.split(/\*\*(.+?)\*\*/g).map((part, index) =>
     index % 2 === 1 ? (
       <strong key={`${keyPrefix}-${index}`} className="font-medium">
         {part}
       </strong>
     ) : (
-      part
+      <span key={`${keyPrefix}-${index}`}>{italics(part, `${keyPrefix}-${index}`)}</span>
     ),
   );
 }
@@ -34,7 +50,7 @@ export function Prose({ text }: { text: string }) {
           return (
             <h3
               key={index}
-              className="mt-3 text-sm font-semibold tracking-tight text-neutral-900 first:mt-0 dark:text-neutral-100"
+              className="mt-3 text-sm font-semibold tracking-tight text-ink first:mt-0"
             >
               {heading[1]}
             </h3>
@@ -46,7 +62,7 @@ export function Prose({ text }: { text: string }) {
           return (
             <hr
               key={index}
-              className="my-2 border-neutral-200 dark:border-neutral-800"
+              className="my-2 border-rule"
             />
           );
         }
@@ -55,7 +71,7 @@ export function Prose({ text }: { text: string }) {
         if (bullet) {
           return (
             <p key={index} className="flex gap-2 pl-1">
-              <span aria-hidden className="text-neutral-400">
+              <span aria-hidden className="text-ink-muted">
                 •
               </span>
               <span>{inline(bullet[1], String(index))}</span>

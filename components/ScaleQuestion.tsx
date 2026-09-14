@@ -10,9 +10,9 @@ const VALUES = Array.from(
 /**
  * The 1-5 control, on the same scale the assistant grades on.
  *
- * Controlled and without a submit button of its own, so it can be composed into
- * a larger form. Sharing the rubric's scale is deliberate: the point of asking
- * is to put their number and the assistant's side by side, which only means
+ * Controlled and without a submit button of its own, so it composes into a
+ * larger form. Sharing the rubric's scale is deliberate: the point of asking is
+ * to put their number and the assistant's side by side, which only means
  * something if the two are measured the same way.
  */
 export function ScaleQuestion({
@@ -31,20 +31,20 @@ export function ScaleQuestion({
   disabled?: boolean;
 }) {
   return (
-    <fieldset className="flex flex-col gap-3" disabled={disabled}>
-      <legend className="mb-3 text-sm font-medium">{question}</legend>
-      <div className="flex justify-between gap-2">
+    <fieldset className="flex flex-col gap-2.5" disabled={disabled}>
+      <legend className="mb-2.5 text-sm font-medium">{question}</legend>
+      <div className="flex gap-2">
         {VALUES.map((option) => {
           const selected = value === option;
           return (
             <label
               key={option}
-              className={`flex h-12 flex-1 items-center justify-center rounded-md border text-sm font-medium transition-colors ${
+              className={`nums flex h-11 flex-1 items-center justify-center rounded-xl border text-sm font-medium transition-colors ${
                 disabled ? "cursor-default" : "cursor-pointer"
               } ${
                 selected
-                  ? "border-neutral-900 bg-neutral-900 text-white dark:border-neutral-100 dark:bg-neutral-100 dark:text-neutral-900"
-                  : "border-neutral-300 hover:border-neutral-500 dark:border-neutral-700 dark:hover:border-neutral-500"
+                  ? "border-ink bg-ink text-plane"
+                  : "border-rule hover:border-rule-strong"
               }`}
             >
               <input
@@ -60,7 +60,7 @@ export function ScaleQuestion({
           );
         })}
       </div>
-      <div className="flex justify-between text-xs text-neutral-500">
+      <div className="flex justify-between text-xs text-ink-muted">
         <span>{lowAnchor}</span>
         <span>{highAnchor}</span>
       </div>

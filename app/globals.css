@@ -1,25 +1,151 @@
 @import "tailwindcss";
 
+/**
+ * Palette roles, not raw colours.
+ *
+ * Taken from the data-viz reference palette so the scorecard and the chat it
+ * sits inside are one system rather than two. The scorecard uses the emphasis
+ * form — one accent hue for the dimensions the recommendation argues about, a
+ * de-emphasis grey for everything else — which was validated against both
+ * surfaces: CVD ΔE 15.9, normal-vision ΔE 17.8/17.0, contrast ≥ 3:1 in both
+ * modes. Changing --accent or --mark-muted invalidates that, so re-run
+ * scripts/validate_palette.js from the dataviz skill if you do.
+ *
+ * Dark values are declared twice on purpose: the media query covers the OS
+ * setting, the [data-theme] scope covers an explicit choice and must win both
+ * ways.
+ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: light;
+
+  /* Surfaces */
+  --plane: #f9f9f7;
+  --surface: #fcfcfb;
+  --surface-sunken: #f2f1ed;
+
+  /* Ink */
+  --ink: #0b0b0b;
+  --ink-secondary: #52514e;
+  --ink-muted: #898781;
+
+  /* Lines */
+  --rule: #e1e0d9;
+  --rule-strong: #c3c2b7;
+
+  /* Marks. One accent hue plus the de-emphasis grey. */
+  --accent: #2a78d6;
+  --accent-quiet: #86b6ef;
+  --mark-muted: #898781;
+  --track: #e1e0d9;
+
+  /* The person's own turn: ink-on-ink, so it never competes with the accent. */
+  --bubble: #1f1f1e;
+  --bubble-ink: #fcfcfb;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --plane: #0d0d0d;
+    --surface: #1a1a19;
+    --surface-sunken: #232322;
+
+    --ink: #ffffff;
+    --ink-secondary: #c3c2b7;
+    --ink-muted: #898781;
+
+    --rule: #2c2c2a;
+    --rule-strong: #383835;
+
+    --accent: #3987e5;
+    --accent-quiet: #184f95;
+    --mark-muted: #898781;
+    --track: #2c2c2a;
+
+    --bubble: #e8e7e1;
+    --bubble-ink: #121211;
   }
 }
 
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --plane: #0d0d0d;
+  --surface: #1a1a19;
+  --surface-sunken: #232322;
+
+  --ink: #ffffff;
+  --ink-secondary: #c3c2b7;
+  --ink-muted: #898781;
+
+  --rule: #2c2c2a;
+  --rule-strong: #383835;
+
+  --accent: #3987e5;
+  --accent-quiet: #184f95;
+  --mark-muted: #898781;
+  --track: #2c2c2a;
+
+  --bubble: #e8e7e1;
+  --bubble-ink: #121211;
+}
+
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-plane: var(--plane);
+  --color-surface: var(--surface);
+  --color-sunken: var(--surface-sunken);
+  --color-ink: var(--ink);
+  --color-ink-secondary: var(--ink-secondary);
+  --color-ink-muted: var(--ink-muted);
+  --color-rule: var(--rule);
+  --color-rule-strong: var(--rule-strong);
+  --color-accent: var(--accent);
+  --color-accent-quiet: var(--accent-quiet);
+  --color-mark-muted: var(--mark-muted);
+  --color-track: var(--track);
+  --color-bubble: var(--bubble);
+  --color-bubble-ink: var(--bubble-ink);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
+  background: var(--plane);
+  color: var(--ink);
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
+}
+
+/* Tabular figures wherever a number is meant to be compared to another. */
+.nums {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .rise {
+    animation: rise 260ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
+  }
+  .grow {
+    animation: grow 520ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Bars grow from the baseline, so length reads as the encoding it is. */
+@keyframes grow {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
 }

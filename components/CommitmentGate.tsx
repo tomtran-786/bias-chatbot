@@ -31,18 +31,21 @@ export function CommitmentGate({
   const complete = option !== null && selfScore !== null;
 
   return (
-    <section className="mx-auto flex w-full max-w-xl flex-col gap-8">
+    <section className="rise flex flex-col gap-7 rounded-2xl border border-rule bg-surface px-5 py-6 sm:px-6">
       <header className="flex flex-col gap-2">
+        <p className="text-xs font-medium tracking-wide text-ink-muted uppercase">
+          Before the grade
+        </p>
         <h2 className="text-xl font-semibold tracking-tight">Your call, first</h2>
-        <p className="text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
+        <p className="text-sm leading-relaxed text-ink-secondary">
           Answer these before the grade is produced. They are recorded as they
           stand and cannot be changed afterwards — that is what makes them worth
           comparing against.
         </p>
       </header>
 
-      <fieldset className="flex flex-col gap-3" disabled={pending}>
-        <legend className="mb-3 text-sm font-medium">
+      <fieldset className="flex flex-col gap-2.5" disabled={pending}>
+        <legend className="mb-2.5 text-sm font-medium">
           {COMMITMENT_PROMPT.pick}
         </legend>
         <div className="flex flex-col gap-2">
@@ -51,10 +54,10 @@ export function CommitmentGate({
             return (
               <label
                 key={candidate}
-                className={`flex cursor-pointer items-center gap-3 rounded-md border px-4 py-3 text-sm transition-colors ${
+                className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 text-sm leading-relaxed transition-colors ${
                   selected
-                    ? "border-neutral-900 bg-neutral-900 text-white dark:border-neutral-100 dark:bg-neutral-100 dark:text-neutral-900"
-                    : "border-neutral-300 hover:border-neutral-500 dark:border-neutral-700 dark:hover:border-neutral-500"
+                    ? "border-ink bg-ink text-plane"
+                    : "border-rule hover:border-rule-strong"
                 }`}
               >
                 <input
@@ -87,7 +90,7 @@ export function CommitmentGate({
         onClick={() =>
           complete && onSubmit({ option, selfScore })
         }
-        className="self-start rounded-md bg-neutral-900 px-5 py-2.5 text-sm font-medium text-white disabled:opacity-40 dark:bg-neutral-100 dark:text-neutral-900"
+        className="self-start rounded-full bg-ink px-5 py-2.5 text-sm font-medium text-plane transition-opacity hover:opacity-90 disabled:opacity-30"
       >
         {pending ? "Grading…" : "Lock it in and see the grade"}
       </button>
