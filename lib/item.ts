@@ -219,6 +219,33 @@ export function forSearch(facts: ItemFacts): Omit<ItemFacts, "purchasePrice"> {
   };
 }
 
+/** How many queries one appraisal runs. Budgeted up front, so a fixed number. */
+export const QUERY_COUNT = 2;
+
+/**
+ * The search queries, built by code rather than by the model.
+ *
+ * Taking `forSearch`'s output makes it a type error to pass the raw facts, so a
+ * purchase price cannot reach a query by way of this function. The wording is
+ * fixed: one query aimed at sold prices and one at listings for sale, because
+ * the two answer different questions and the pricing step prefers sold.
+ *
+ * `searchQuery` leads because it is the one field the extraction was asked to
+ * write for exactly this purpose (brand, model, size, no adjectives); the model
+ * and variant are the fallback if it came back empty.
+ */
+export function searchQueries(
+  facts: Pick<ReturnType<typeof forSearch>, "searchQuery" | "model" | "variant">,
+): string[] {
+  const name = (
+    facts.searchQuery || [facts.model, facts.variant].filter(Boolean).join(" ")
+  )
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 150);
+  return [`${name} used sold price`, `${name} used for sale`];
+}
+
 /** The intake as the model receives it, appended to the system instruction. */
 export function describeIntake(intake: Intake, photoCount: number): string {
   return [

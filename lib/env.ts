@@ -17,6 +17,12 @@ function required(name: string): string {
   return value;
 }
 
+/** A malformed number falls back to the default rather than becoming NaN, which would disable the limit. */
+function positiveInt(name: string, fallback: number): number {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
 export const env = {
   get geminiApiKey() {
     return required("GEMINI_API_KEY");
@@ -40,5 +46,26 @@ export const env = {
    */
   get maxTurns() {
     return Number(process.env.MAX_TURNS ?? 20);
+  },
+  /**
+   * Read lazily and only when an appraisal runs, so the conversation still works
+   * with no search key at all and the failure names the one thing that is
+   * missing instead of taking the whole app down at startup.
+   */
+  get tavilyApiKey() {
+    return required("TAVILY_API_KEY");
+  },
+  /**
+   * In-memory daily ceilings on outbound calls (see lib/budget.ts). A tripwire
+   * against a loop or a runaway client, not the real spending guard: the counter
+   * resets when the process restarts. The real guard is the account tier — a
+   * Gemini project with no billing and a Tavily plan with pay-as-you-go off — so
+   * that running out of quota ends in an error rather than a charge.
+   */
+  get dailySearchBudget() {
+    return positiveInt("DAILY_SEARCH_BUDGET", 40);
+  },
+  get dailyModelBudget() {
+    return positiveInt("DAILY_MODEL_BUDGET", 300);
   },
 } as const;

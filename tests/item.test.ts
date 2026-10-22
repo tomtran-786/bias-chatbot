@@ -7,6 +7,8 @@ import {
   forSearch,
   photoProblem,
   scrubPrices,
+  searchQueries,
+  QUERY_COUNT,
   type ItemFacts,
   type Photo,
 } from "@/lib/item";
@@ -94,5 +96,50 @@ describe("photoCount", () => {
     expect(referencedPhotoIds(transcript)).toEqual(["a", "b", "c"]);
     expect(photoCount(transcript)).toBe(3);
     expect(photoCount([])).toBe(0);
+  });
+});
+
+describe("searchQueries", () => {
+  const facts: ItemFacts = {
+    searchQuery: "Apple iPhone 13 128GB",
+    model: "iPhone 13",
+    variant: "128GB, blue",
+    ageMonths: 36,
+    condition: "good",
+    included: [],
+    defects: [],
+    purchasePrice: 849,
+  };
+
+  it("makes the fixed number of queries, one for sold prices and one for listings", () => {
+    const queries = searchQueries(forSearch(facts));
+    expect(queries).toHaveLength(QUERY_COUNT);
+    expect(queries).toEqual([
+      "Apple iPhone 13 128GB used sold price",
+      "Apple iPhone 13 128GB used for sale",
+    ]);
+  });
+
+  it("never contains what they paid, however it was written into the facts", () => {
+    const leaky: ItemFacts = {
+      ...facts,
+      searchQuery: "Apple iPhone 13 128GB paid $849",
+      model: "iPhone 13 ($849)",
+      variant: "bought for 849 dollars",
+    };
+    const text = searchQueries(forSearch(leaky)).join(" | ");
+    expect(text).not.toMatch(/849|\$/);
+    expect(text).toContain("iPhone 13");
+  });
+
+  it("falls back to the model and variant when the search query came back empty", () => {
+    const queries = searchQueries(forSearch({ ...facts, searchQuery: "", variant: "128GB" }));
+    expect(queries[0]).toBe("iPhone 13 128GB used sold price");
+  });
+
+  it("collapses whitespace and bounds the length", () => {
+    const long = searchQueries(forSearch({ ...facts, searchQuery: `iPhone   13 ${"x".repeat(400)}` }));
+    expect(long[0]).not.toContain("  ");
+    expect(long[0].length).toBeLessThan(200);
   });
 });

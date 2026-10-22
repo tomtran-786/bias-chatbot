@@ -2,9 +2,14 @@
  * The market lookup.
  *
  * The one step that is not streamed and not a conversation turn. It reads the
- * item out of the conversation, searches for used listings of it, checks each
- * listing against the page it came from, and works out the market price, a
- * suggested price and the gap to theirs.
+ * item out of the conversation, searches the web for used listings of it, has
+ * the model read the results, checks every price the model reports against the
+ * text it came from, and works out the market price, a suggested price and the
+ * gap to theirs.
+ *
+ *   gate -> budget -> facts -> queries -> search -> sources -> read -> ground -> price
+ *
+ * The app searches and the model reads: no call here gives the model a tool.
  *
  * Every figure in the response is computed here, by lib/pricing.ts, from the
  * listings. The model reports listings and a position; it never states a number
@@ -13,29 +18,43 @@
  * Refuses to run before the assistant has asked its questions and before the
  * person has locked in their own price. The locked price is the uncoached
  * baseline the whole exercise rests on; looking at the market first would
- * destroy it. And the search is never shown that price, or what they paid — see
- * `searchMarket`.
+ * destroy it. And neither the search queries nor the model that reads the
+ * results are ever shown that price, or what they paid.
+ *
+ * Nothing in this route retries. Every failure ends the request once.
  */
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { BudgetExhaustedError, spend } from "@/lib/budget";
 import {
   MalformedAppraisalError,
+  ModelTimeoutError,
   RateLimitError,
   extractFacts,
-  searchMarket,
+  readListings,
 } from "@/lib/gemini";
-import { groundListings } from "@/lib/grounding";
 import {
+  QUERY_COUNT,
   askingPriceSchema,
   checkPhotos,
+  forSearch,
   intakeSchema,
   photoSchema,
+  searchQueries,
 } from "@/lib/item";
 import {
   computeAppraisal,
   type AppraiseResponse,
   type AppraisalInput,
 } from "@/lib/pricing";
+import {
+  SearchFailedError,
+  SearchQuotaError,
+  SearchRateLimitError,
+  SearchUnavailableError,
+  searchListings,
+} from "@/lib/search";
+import { groundListings, toSources } from "@/lib/sources";
 import { canEnter } from "@/lib/stages";
 import {
   assistantTurns,
@@ -44,8 +63,11 @@ import {
   transcriptSchema,
 } from "@/lib/transcript";
 
-/** Two model calls and a handful of redirects, in sequence. */
+/** Facts, a few searches, and the reading, in sequence. */
 export const maxDuration = 60;
+
+/** The model calls one appraisal makes: the facts, and the reading. */
+const MODEL_CALLS = 2;
 
 const bodySchema = z.object({
   intake: intakeSchema,
@@ -54,17 +76,16 @@ const bodySchema = z.object({
   transcript: transcriptSchema,
 });
 
+const refuse = (error: string, status: number, reason?: string) =>
+  NextResponse.json(reason ? { error, reason } : { error }, { status });
+
 export async function POST(request: Request) {
   const parsed = bodySchema.safeParse(await request.json().catch(() => null));
-  if (!parsed.success) {
-    return NextResponse.json({ error: "invalid_body" }, { status: 400 });
-  }
+  if (!parsed.success) return refuse("invalid_body", 400);
   const { intake, askingPrice, transcript } = parsed.data;
 
   const checked = checkPhotos(parsed.data.photos, referencedPhotoIds(transcript));
-  if (!checked.ok) {
-    return NextResponse.json({ error: checked.error }, { status: checked.status });
-  }
+  if (!checked.ok) return refuse(checked.error, checked.status);
 
   const gate = canEnter("appraise", {
     assistantTurns: assistantTurns(transcript),
@@ -72,11 +93,18 @@ export async function POST(request: Request) {
     hasAskingPrice: true,
     hasAppraisal: false,
   });
-  if (!gate.ok) {
-    return NextResponse.json(
-      { error: "out_of_order", reason: gate.reason },
-      { status: 409 },
-    );
+  if (!gate.ok) return refuse("out_of_order", 409, gate.reason);
+
+  // Reserved all at once and before anything is called, so a request that
+  // cannot be afforded costs nothing and cannot be half-run.
+  try {
+    spend([
+      ["search", QUERY_COUNT],
+      ["model", MODEL_CALLS],
+    ]);
+  } catch (error) {
+    if (error instanceof BudgetExhaustedError) return refuse("budget_exhausted", 429);
+    throw error;
   }
 
   try {
@@ -85,17 +113,18 @@ export async function POST(request: Request) {
     // Without a model name there is nothing to search for, and a search for
     // "phone" would return a market for the wrong thing. Send them back to the
     // questions rather than price a guess.
-    if (!item.model.trim()) {
-      return NextResponse.json({ error: "needs_identity" }, { status: 422 });
-    }
+    if (!item.model.trim()) return refuse("needs_identity", 422);
 
-    const market = await searchMarket(item);
+    const search = await searchListings(searchQueries(forSearch(item)));
+    const sources = toSources(search.results);
+    const reading = await readListings(item, sources);
+
     const raw: AppraisalInput = {
       item,
-      listings: groundListings(market.listings, market.sources),
-      newPrice: market.newPrice,
-      position: market.position,
-      positionEvidence: market.positionEvidence,
+      listings: groundListings(reading.listings, sources),
+      newPrice: reading.newPrice,
+      position: reading.position,
+      positionEvidence: reading.positionEvidence,
     };
 
     const appraisal = computeAppraisal(raw, askingPrice.usd);
@@ -103,24 +132,37 @@ export async function POST(request: Request) {
       ...appraisal,
       item,
       raw,
-      searchEntryPoint: market.searchEntryPoint,
+      queries: search.queries,
     };
     return NextResponse.json(body);
   } catch (error) {
+    // Both are "rate_limited" to the client, but which service said so is the
+    // first thing anyone debugging a free tier needs to know.
     if (error instanceof RateLimitError) {
-      return NextResponse.json({ error: "rate_limited" }, { status: 429 });
+      return refuse("rate_limited", 429, "Gemini is rate limiting this key (its free quota may be used up).");
     }
+    if (error instanceof SearchRateLimitError) {
+      return refuse("rate_limited", 429, "The search service is rate limiting this key.");
+    }
+    if (error instanceof ModelTimeoutError) {
+      return refuse("appraisal_failed", 504, "The model took too long to answer. Try again in a moment.");
+    }
+    if (error instanceof SearchQuotaError) return refuse("search_quota", 429);
+    if (error instanceof SearchUnavailableError) {
+      return refuse("search_unavailable", 503, error.message);
+    }
+    if (error instanceof SearchFailedError) {
+      return refuse("search_failed", 502, error.message);
+    }
+
     console.error("appraisal failed", error);
     // The message is surfaced deliberately: "the listing extraction did not match
     // the schema" is the difference between a fixable prompt problem and an
     // opaque failure, and the only person it reaches is the one running this.
-    return NextResponse.json(
-      {
-        error: "appraisal_failed",
-        reason:
-          error instanceof MalformedAppraisalError ? error.message : undefined,
-      },
-      { status: 502 },
+    return refuse(
+      "appraisal_failed",
+      502,
+      error instanceof MalformedAppraisalError ? error.message : undefined,
     );
   }
 }

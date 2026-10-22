@@ -46,7 +46,8 @@ type ChatError =
   | "server_error"
   | "turn_limit"
   | "out_of_order"
-  | "payload_too_large";
+  | "payload_too_large"
+  | "budget_exhausted";
 
 const ERROR_COPY: Record<ChatError, string> = {
   rate_limited:
@@ -54,6 +55,23 @@ const ERROR_COPY: Record<ChatError, string> = {
   server_error: "Something went wrong generating a reply. Send it again.",
   turn_limit: "This conversation has reached its maximum length.",
   out_of_order: "That step is not available yet.",
+  payload_too_large:
+    "A photo is too large to send. Remove it and attach a smaller one.",
+  budget_exhausted:
+    "This app’s daily limit on AI calls is used up. It resets at midnight UTC, or when the server restarts.",
+};
+
+/** What the market lookup can refuse with, in words a person can act on. */
+const APPRAISE_ERROR_COPY: Record<string, string> = {
+  rate_limited:
+    "A free-tier rate limit was hit. Wait a minute and try again; if it keeps happening, the day’s quota may be used up.",
+  search_quota:
+    "The search service’s free credits for this month are used up, so the market cannot be looked up until they renew. Nothing is charged.",
+  search_unavailable:
+    "The market search is not set up correctly.",
+  search_failed: "The market search failed.",
+  budget_exhausted:
+    "This app’s daily limit on market lookups is used up. It resets at midnight UTC, or when the server restarts.",
   payload_too_large:
     "A photo is too large to send. Remove it and attach a smaller one.",
 };
@@ -299,18 +317,17 @@ export function Conversation() {
           setFailure(
             "The assistant could not tell exactly which model this is, so there is nothing to search for. Tell it more about the item — the model name, a label, a screenshot of the settings — then look up the market again. Your price stays locked in.",
           );
-        } else if (code === "rate_limited") {
-          setFailure(
-            "The AI service has hit its request limit. The market search counts against its own quota, so if this keeps happening the API key’s plan may not include it. Wait a minute and try again.",
-          );
-        } else if (code === "payload_too_large") {
-          setFailure(ERROR_COPY.payload_too_large);
         } else {
           const reason = body && "reason" in body ? body.reason : undefined;
+          const known = code ? APPRAISE_ERROR_COPY[code] : undefined;
           setFailure(
-            reason
-              ? `The market could not be looked up: ${reason}`
-              : "The market could not be looked up. Try again.",
+            known
+              ? reason
+                ? `${known} ${reason}`
+                : known
+              : reason
+                ? `The market could not be looked up: ${reason}`
+                : "The market could not be looked up. Try again.",
           );
         }
         return;

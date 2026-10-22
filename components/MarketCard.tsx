@@ -124,28 +124,30 @@ export function MarketCard({
       {uncounted.length > 0 ? (
         <ListingList
           title={`Shown, not counted (${uncounted.length})`}
-          note="The page behind these is a search or category page, or could not be opened, so their prices could not be tied to a real listing."
+          note="These prices did not appear word for word in the text the search returned for that page, so they could not be tied to a real listing."
           listings={uncounted}
           dim
         />
       ) : null}
 
       <footer className="flex flex-col gap-4 bg-sunken px-5 py-5 sm:px-6">
-        {appraisal.searchEntryPoint ? (
-          // Showing Google's search suggestions beside grounded results is a
-          // condition of using them. A sandboxed frame with no script access
-          // renders Google's markup as supplied without letting it touch the page.
-          <iframe
-            title="Google Search suggestions"
-            sandbox="allow-popups allow-popups-to-escape-sandbox"
-            srcDoc={appraisal.searchEntryPoint.renderedContent}
-            className="h-14 w-full rounded-lg border-0"
-          />
+        {appraisal.queries.length > 0 ? (
+          <div className="flex flex-col gap-1.5">
+            <p className="text-xs font-medium text-ink-secondary">Searched for</p>
+            <ul className="flex flex-col gap-1">
+              {appraisal.queries.map((query) => (
+                <li key={query} className="text-xs text-ink-muted">
+                  “{query}”
+                </li>
+              ))}
+            </ul>
+          </div>
         ) : null}
         <p className="text-xs leading-relaxed text-ink-muted">
-          Prices come from listings found by web search. They are asking or sold
-          prices, not offers you will receive, and a search can miss listings
-          or pick up the wrong model.
+          Search results via Tavily, read by an AI model. A price is counted only
+          if it appears word for word in the page text the search returned. They
+          are asking or sold prices, not offers you will receive, and a search can
+          miss listings or pick up the wrong model.
         </p>
         {canContinue ? (
           <button

@@ -23,6 +23,7 @@
  */
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { BudgetExhaustedError, spend } from "@/lib/budget";
 import { env } from "@/lib/env";
 import {
   RateLimitError,
@@ -120,6 +121,17 @@ export async function POST(request: Request) {
 
   if (userTurns(transcript) >= env.maxTurns) {
     return NextResponse.json({ error: "turn_limit" }, { status: 429 });
+  }
+
+  // One model call per turn. Checked before the stream opens so a refusal is a
+  // plain 429 the client can read, not an error half way through a reply.
+  try {
+    spend([["model", 1]]);
+  } catch (error) {
+    if (error instanceof BudgetExhaustedError) {
+      return NextResponse.json({ error: "budget_exhausted" }, { status: 429 });
+    }
+    throw error;
   }
 
   // Everything below is the verdict's alone. After a failed lookup the person

@@ -168,15 +168,16 @@ Four deliberate differences between this document run as a Gem and run through
 this app. They are the concrete places the app is a stronger instrument than the
 Gem, and are worth recording rather than smoothing over.
 
-1. **The search cannot see their price.** The app runs the market search as a
-   separate call that is given the item and never what they paid or what they
-   locked in, so the listings it summarises are not pulled toward either number.
-   A Gem searches inside the same conversation where both are on the page.
-2. **Sources are verified, not trusted.** Every listing carries a pointer to a
-   page the search actually retrieved, and the link shown is the one the search
-   returned, never a URL the model wrote. A listing whose source is only the
-   right website, not an item page, is shown dimmed and left out of the median.
-   A Gem will cite whatever URL it likes.
+1. **The search cannot see their price.** The app builds the search queries
+   itself, from facts with every dollar amount scrubbed out, and the model that reads
+   the results is given the item and never what they paid or what they locked in. A
+   Gem searches inside the same conversation where both are on the page.
+2. **Sources are verified, not trusted.** The model reports listings, each pointing
+   at one of the numbered search results it was shown. A listing is counted only if
+   its price appears word for word in the text of that result, and the link shown is
+   the address the search returned, never a URL the model wrote. A price the model
+   rounded, converted or took from another page is shown dimmed and left out of the
+   median. A Gem will cite whatever URL it likes and report whatever price it likes.
 3. **The market price is computed.** The median, the range, the per-platform
    split, the suggested price and the gap to theirs are derived by the app from
    the listings, after it has dropped other currencies, for-parts listings and

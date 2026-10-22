@@ -65,7 +65,14 @@ export function IntakeForm({
         </div>
         <p className="text-xs leading-relaxed text-ink-muted">
           Photos are resized and re-saved in your browser first, which also removes
-          their location data. Nothing is stored after you close the page.
+          their location data. This app stores nothing after you close the page.
+        </p>
+        <p className="text-xs leading-relaxed text-ink-muted">
+          <span className="font-medium text-ink-secondary">Privacy:</span> this
+          runs on Google’s free Gemini tier, where what is sent — your messages
+          and photos included — may be used by Google to improve its products.
+          Leave out faces, addresses, documents and anything you would not want
+          that done with.
         </p>
       </div>
 

@@ -16,7 +16,7 @@ import { z } from "zod";
 import {
   LISTING_CONDITIONS,
   type GroundedListing,
-} from "./grounding";
+} from "./sources";
 import { itemFactsSchema, type ItemFacts } from "./item";
 
 /** A market needs this many listings before it gets a range and an adjustment. */
@@ -25,8 +25,12 @@ export const FULL_MIN = 5;
 export const THIN_MIN = 3;
 /** Listings that go into one median. */
 export const MAX_LISTINGS = 10;
-/** One site can dominate a search; cap what it contributes. */
-export const MAX_PER_PLATFORM = 3;
+/**
+ * One page can carry a dozen prices (a search results page, a price guide) and
+ * would otherwise be the whole market by itself; cap what a single source
+ * contributes.
+ */
+export const MAX_PER_SOURCE = 3;
 /** A listing outside this band of the first-pass median is treated as an error. */
 export const OUTLIER_LOW = 0.33;
 export const OUTLIER_HIGH = 3;
@@ -183,7 +187,7 @@ function screen(
     if (newPrice !== null && price > newPrice) continue;
 
     const title = listing.title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-    const key = `${listing.platform}|${price}|${title}`;
+    const key = `${listing.url ?? listing.platform}|${price}|${title}`;
     if (seen.has(key)) continue;
     seen.add(key);
 
@@ -192,14 +196,15 @@ function screen(
   return kept;
 }
 
-/** At most `MAX_PER_PLATFORM` from any one site, at most `MAX_LISTINGS` overall. */
-function capListings<T extends { platform: string }>(listings: readonly T[]): T[] {
-  const perPlatform = new Map<string, number>();
+/** At most `MAX_PER_SOURCE` from any one page, at most `MAX_LISTINGS` overall. */
+function capListings<T extends { url: string | null }>(listings: readonly T[]): T[] {
+  const perSource = new Map<string, number>();
   const out: T[] = [];
   for (const listing of listings) {
-    const used = perPlatform.get(listing.platform) ?? 0;
-    if (used >= MAX_PER_PLATFORM) continue;
-    perPlatform.set(listing.platform, used + 1);
+    const source = listing.url ?? "";
+    const used = perSource.get(source) ?? 0;
+    if (used >= MAX_PER_SOURCE) continue;
+    perSource.set(source, used + 1);
     out.push(listing);
     if (out.length >= MAX_LISTINGS) break;
   }
@@ -214,7 +219,7 @@ export const rawListingSchema = z.object({
   platform: z.string().max(120),
   sourceIndex: z.number().int().min(0).max(1000),
   url: z.string().max(2000).nullable(),
-  match: z.enum(["listing", "domain", "none"]),
+  match: z.enum(["verified", "unverified", "none"]),
 });
 
 /**
@@ -289,9 +294,9 @@ export function computeAppraisal(
   const newPrice = input.newPrice ?? null;
   const screened = screen(input.listings, newPrice);
 
-  const verified = screened.filter((l) => l.match === "listing");
+  const verified = screened.filter((l) => l.match === "verified");
   const unverified = screened
-    .filter((l) => l.match !== "listing")
+    .filter((l) => l.match !== "verified")
     .map((l): PricedListing => ({ ...l, status: "unverified" }));
 
   // The outlier band is anchored on the first-pass median of everything that
@@ -379,8 +384,8 @@ export type AppraiseResponse = Appraisal & {
    * the server can recompute rather than trust a median the client sends.
    */
   raw: AppraisalInput;
-  /** Google's search-suggestions widget; must be shown with the results. */
-  searchEntryPoint: { renderedContent: string } | null;
+  /** The searches that were run, so the person can see what was looked up. */
+  queries: string[];
 };
 
 const dollars = new Intl.NumberFormat("en-US", {

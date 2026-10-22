@@ -7,7 +7,7 @@
  * locked price or the market until the verdict — and those claims live in this
  * route.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const streamReply = vi.hoisted(() => vi.fn());
 
@@ -21,6 +21,7 @@ const { RateLimitError } = await import("@/lib/gemini");
 const { env } = await import("@/lib/env");
 const { FACT_COUNT } = await import("@/lib/stages");
 const { MAX_PHOTO_BYTES, MAX_PHOTOS } = await import("@/lib/item");
+const { resetBudget } = await import("@/lib/budget");
 
 /** Yields `chunks` as though they arrived from the model. */
 function modelSays(...chunks: string[]) {
@@ -71,7 +72,7 @@ const appraisal = {
     platform: `Site ${index}`,
     sourceIndex: index,
     url: `https://site${index}.example/item/${index}`,
-    match: "listing" as const,
+    match: "verified" as const,
   })),
   newPrice: null,
   position: "typical" as const,
@@ -110,6 +111,7 @@ const texts = (events: Array<{ t: string; v?: string }>) =>
 beforeEach(() => {
   streamReply.mockReset();
   modelSays("Noted.");
+  resetBudget();
 });
 
 describe("streaming", () => {
@@ -363,5 +365,31 @@ describe("errors", () => {
     expect(status).toBe(429);
     expect(json.error).toBe("turn_limit");
     expect(streamReply).not.toHaveBeenCalled();
+  });
+});
+
+describe("the daily budget", () => {
+  afterEach(() => {
+    delete process.env.DAILY_MODEL_BUDGET;
+  });
+
+  it("counts a model call per turn and refuses the next one before calling the model", async () => {
+    process.env.DAILY_MODEL_BUDGET = "2";
+
+    expect((await postChat(base)).status).toBe(200);
+    expect((await postChat(base)).status).toBe(200);
+    expect(streamReply).toHaveBeenCalledTimes(2);
+
+    const refused = await postChat(base);
+    expect(refused.status).toBe(429);
+    expect(refused.json.error).toBe("budget_exhausted");
+    expect(streamReply).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not spend on a request it rejects", async () => {
+    process.env.DAILY_MODEL_BUDGET = "1";
+    await postChat({ ...base, phase: "nonsense" }); // 400
+    await postChat({ ...base, phase: "verdict" }); // 409: no market
+    expect((await postChat(base)).status).toBe(200);
   });
 });

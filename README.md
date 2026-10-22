@@ -49,55 +49,91 @@ npm test           # unit + route tests, no network, no quota
 npm run typecheck
 npm run lint
 npm run build
-npm run spike      # real API: does Search grounding behave as this code assumes?
+npm run spike      # real APIs: Tavily + Gemini on three items (spends ~9 Tavily credits)
 ```
 
-### The market search needs a key with Search grounding quota
+### Two free keys, and what keeps this free
 
-The conversation, the facts and the verdict are ordinary model calls. The market
-lookup uses **Grounding with Google Search**, which is a separate tool with its
-own quota — and on a free-tier key it is often zero even when ordinary calls work
-fine. When it is, the lookup fails with a 429 and the app shows a banner saying
-so.
+The app needs a Gemini key and a Tavily key, both on free plans with no card:
 
-`npm run spike` makes this plain: it first checks that a call without the tool
-works and one with it does not, and says which. Check what your key has at
-<https://aistudio.google.com/rate-limit>; if Search grounding is not included,
-use a key from a project with billing enabled.
+- **Gemini** from <https://aistudio.google.com/apikey>. In AI Studio, check the
+  key's project is on the **Free** tier with no billing account attached.
+- **Tavily** from <https://tavily.com>: 1,000 credits a month on the free plan. One
+  appraisal is two searches, so about 500 appraisals a month. **Leave pay-as-you-go
+  off.** Out of credits is then an error (HTTP 432), not a charge.
+
+Those two account settings are what make the app free; nothing in the code can. The
+daily budget (`DAILY_SEARCH_BUDGET`, `DAILY_MODEL_BUDGET`) is a tripwire against a
+loop, held in memory and reset on restart, so it is a second line of defence only.
+
+The model is never given a tool. An earlier version used Gemini's built-in Google
+Search grounding, but that tool is not available on Gemini's free tier — it needs
+billing — which broke the "never ask for a card" rule. So the app now does the
+searching itself and the model only reads what it finds.
+
+`npm run spike` runs the real pipeline for three items (a phone, headphones and a
+rare one) and prints what each stage found. It spends about 9 Tavily credits.
+`npm run spike -- --save` also records `tests/fixtures/tavily-sample.json`.
+
+### Privacy
+
+On the free Gemini tier, what is sent to Gemini — the conversation and the photos —
+**may be used by Google to improve its products.** The intake screen says so. The
+app itself stores nothing. Photos are re-encoded in the browser, which strips their
+location data, but faces, addresses and documents in the frame still go through.
+The search service sees only the queries (an item name, never a price).
 
 ## How the market is worked out
 
 Everything the person is shown comes from `lib/pricing.ts`, from listings the
-model *reported*. The model never states a number that is displayed.
+model *reported*. The model never states a number that is displayed. The app
+searches and the model reads: no model call has a `tools` entry, and a test checks
+every request for it.
 
-1. **Facts.** One call with no tools reads the conversation and photos and
-   returns the item as data. If it cannot name the model, the app goes back to
-   the questions rather than search for a guess (`needs_identity`).
-2. **Search.** A call with Google Search, given the item but *not* what they paid
-   or what they locked in. Dollar amounts are scrubbed out of the free-text
-   fields as well.
-3. **Extraction.** A second call, no tools, turns the search summary into
-   listings. Each listing points at one of the sources the search retrieved
-   (`sourceIndex`) — it does not carry a URL.
-4. **Grounding** (`lib/grounding.ts`). Google's redirect links are followed to
-   their real address (the `Location` header only; the destination is never
-   fetched). The link a person sees is always one of those, never a URL the model
-   wrote. A listing whose source is an item page counts; one whose source is only
-   the right site is shown dimmed and left out of the median.
-5. **Pricing** (`lib/pricing.ts`).
+```
+gate -> budget -> facts -> queries -> Tavily (<= 2) -> sources -> read -> ground -> price
+```
+
+1. **Budget** (`lib/budget.ts`). Two searches and two model calls are reserved up
+   front, all or nothing; over the daily limit the request is refused (429
+   `budget_exhausted`) before any API is called.
+2. **Facts.** One model call with no tools reads the conversation and photos and
+   returns the item as data. If it cannot name the model, the app goes back to the
+   questions rather than search for a guess (`needs_identity`).
+3. **Queries** (`searchQueries` in `lib/item.ts`). Built by code, not by the model:
+   `"<item> used sold price"` and `"<item> used for sale"`. They are made from facts
+   that have had every dollar amount scrubbed, so they cannot contain what the person
+   paid or the price they locked in.
+4. **Search** (`lib/search.ts`). Tavily, `search_depth: "basic"` (1 credit), ten
+   results, restricted to used-item sites (eBay, Swappa, Mercari, OfferUp, Craigslist,
+   Reverb, Poshmark, Depop, Back Market, Gazelle; not Facebook, which needs a login),
+   with each page's body as markdown. A 15-second timeout, and **no retries**: a failed
+   call is reported once. Tavily's errors map to 401 → `search_unavailable`, 432/433 →
+   `search_quota`, 429 → `rate_limited`.
+5. **Sources** (`lib/sources.ts`). Results are numbered `[0]..[n]`. A source's text is
+   the search's own summary plus every line of the page with a `$` amount, cut to about
+   3,000 characters.
+6. **Read.** One model call with a response schema and no tools turns the numbered
+   sources into listings, each carrying a `sourceIndex`, never a URL.
+7. **Ground.** A listing counts only if its `priceText` appears **word for word** in
+   the text of the source it cites (whitespace collapsed; `$1,049` does not match
+   `US $1,049.99`). Otherwise it is shown dimmed and left out. The link shown is always
+   the address Tavily returned, never one the model wrote. Because the price is checked
+   against the text, list pages and price-guide pages count when their price matches.
+8. **Price** (`lib/pricing.ts`).
    - Prices are parsed from the text as shown ("US $1,049.99"); other currencies,
      ranges and unparseable prices are dropped.
    - For-parts listings, listings above the new price, duplicates, and listings
-     outside 0.33×–3× the first-pass median are dropped. At most 3 per site, 10 in
-     all.
+     outside 0.33×–3× the first-pass median are dropped. At most 3 per source page, 10
+     in all.
    - Sold listings are used on their own once there are five; otherwise asking
      prices are used and the card says asking prices run high.
    - **Five or more** listings: median, middle-half range, and a condition
-     adjustment — the model picks `below | typical | above` with its evidence,
-     and the app maps that to P25 / median / P75, capped at P75 and at 0.9× the
-     new price, rounded to a price people list at. **Three or four:** median only,
-     flagged as thin. **Fewer than three:** no price, no gap; the verdict explains
-     how to price it themselves.
+     adjustment — the model picks `below | typical | above` with its evidence, and the
+     app maps that to P25 / median / P75, capped at P75 and at 0.9× the new price,
+     rounded to a price people list at. **Three or four:** median only, flagged as thin.
+     **Fewer than three:** no price, no gap; the verdict explains how to price it
+     themselves.
    - The price is `overpriced` when it is 15% or more above the median.
 
 The server recomputes all of this on the verdict turn from the raw listings the
@@ -124,10 +160,14 @@ turn, so editing it edits the intervention. See `protocols/README.md`.
 Only the span between `<!-- GEM CORE START -->` and `<!-- GEM CORE END -->` goes
 into the Gemini Gem builder. Four things the app does that a Gem cannot:
 
-1. **The search cannot see their price.** It is a separate call given the item
-   and never the numbers.
-2. **Sources are verified, not trusted.** Links come from the search's own
-   metadata, and a listing is only counted if its source is an item page.
+1. **The search cannot see their price.** The queries are built by code from facts
+   with every dollar amount scrubbed out, and the model that reads the results is
+   given the item and never the numbers. A Gem searches inside the same conversation
+   where both are on the page.
+2. **Sources are verified, not trusted.** A listing is counted only if its price
+   appears word for word in the text of the page it cites, and the link shown is the
+   address the search returned, never a URL the model wrote. A Gem will cite whatever
+   URL it likes and report whatever price it likes.
 3. **The market price is computed.** The model reports listings and a position;
    the app does the arithmetic.
 4. **Phase order is enforced.** No price before four questions and a photo, no
@@ -148,34 +188,48 @@ being precise about rather than overclaiming.
 | `GEMINI_MODEL` | `gemini-3.6-flash` | Pinned deliberately — see below |
 | `PROTOCOL_FILE` | `protocol_v2.md` | Which protocol to load |
 | `MAX_TURNS` | `20` | Per-conversation cap, guards the quota |
+| `TAVILY_API_KEY` | — | Required to look up the market; read only when an appraisal runs |
+| `DAILY_SEARCH_BUDGET` | `40` | Tavily calls per UTC day, counted in memory |
+| `DAILY_MODEL_BUDGET` | `300` | Gemini calls per UTC day, counted in memory |
 
 **Verify the model before each demo.** Google's catalog moves: at the time of
-writing `gemini-2.5-flash` returns 404 for newly created keys. Real per-model
-quotas are published only at <https://aistudio.google.com/rate-limit>, not in the
-API docs. A full appraisal is roughly ten model calls, one of them using Search
-grounding, so budget accordingly.
+writing `gemini-2.5-flash` returns 404 for newly created keys, and a busy model can
+answer 503 for a while. Real per-model quotas are published only at
+<https://aistudio.google.com/rate-limit>. A full appraisal is roughly nine model calls
+(five conversation turns, the facts, the reading, the verdict) and two Tavily credits.
 
-Quota exhaustion is handled rather than hidden: a banner says to wait, and any
-text generated before the failure stays on screen.
+Quota exhaustion is handled rather than hidden: a banner says what ran out and what
+to do, and any text generated before a failure stays on screen. Nothing is retried
+automatically.
 
 ## Known limitations
 
+- **Popular items return few individual listings.** For the iPhone 13 the first real
+  run found 12 sources but only 3 individual listings (a "thin" market): most of what
+  Tavily returned for it was price-guide pages and category pages, whose figures are
+  averages and ranges, which the reading deliberately does not count as listings. A
+  headphone model and a rare item each gave 11. Counting a guide's "average sale
+  price" as a data point would give more numbers and a weaker claim; that is a product
+  decision, not a bug.
+- **Refurbishers price high.** Gazelle and Back Market are in the search because they
+  publish many prices, but they sell certified refurbished stock with a warranty, so
+  their prices sit above what one person gets selling privately.
 - **Listings are not sold prices.** Unless a listing is marked sold, it is what a
   seller is *asking*, which runs high. The card says which it used. A search also
-  misses listings and sometimes picks up the wrong variant.
-- **Sources can be few.** A rare item may return too few listings to state a
-  price; the app says so rather than guess.
-- **The item-page rule is a heuristic.** `lib/grounding.ts` decides what counts as
-  an item page from how each marketplace structures its URLs. It was written from
-  those structures, not tuned on captured search results; run `npm run spike` and
-  check it against real sources before relying on the "counted" level.
-- **The sample response in `tests/fixtures/grounding-sample.json` is synthetic**,
-  written to the SDK's types because Search had no quota when it was made. Replace
-  it with output from `npm run spike`.
+  misses listings and sometimes picks up the wrong variant or an accessory (the
+  outlier rule catches most of those).
+- **The verbatim check proves the price is in the page text, not that it belongs to
+  that listing.** A page that lists several items can carry the same amount for a
+  different one. It rules out invented, rounded and misread prices, not every mix-up.
+- **Free tiers move.** Gemini's free quota and Tavily's 1,000 credits can change, and
+  a busy Gemini model can answer 503. Check both dashboards before a demo.
 - **A refresh loses an in-progress appraisal.** There is no database and no
   session; the browser holds the conversation and posts it with each turn.
   `sessionStorage` would fix it without adding a server.
-- **Nothing is recorded.** No transcripts, no prices, no analytics. If the team
-  later wants data from pilot runs, that is a new decision, not an oversight.
-- **The endpoint is open.** With no auth, anyone with the URL can post to it and
-  spend the quota. Fine while it runs on localhost.
+- **Nothing is recorded by this app.** No transcripts, no prices, no analytics. (Google
+  and Tavily see what is sent to them; see Privacy.)
+- **The server cannot stop a second appraisal.** It is stateless, so only the client
+  limits a conversation to one; the daily budget is what bounds a client that ignores
+  that.
+- **The endpoint is open.** With no auth, anyone with the URL can post to it and spend
+  the quota. Fine while it runs on localhost; the daily budget limits the damage.

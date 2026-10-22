@@ -1,0 +1,37 @@
+{
+  "_note": "SYNTHETIC. Hand-written to the documented shape of a Tavily /search response, with content chosen to exercise specific cases exactly (a price in the summary and the body, a price table, cents that a model might drop, a page with no body). It is NOT real data; the real capture is tests/fixtures/tavily-sample.json, used by the property tests in tests/sources.test.ts.",
+  "query": "Apple iPhone 13 128GB used sold price",
+  "results": [
+    {
+      "title": "Apple iPhone 13 128GB Blue Unlocked | eBay",
+      "url": "https://www.ebay.com/itm/166000000001?hash=item2670",
+      "content": "Apple iPhone 13 128GB Blue Unlocked, Good condition. Sold for US $312.00. Free returns.",
+      "score": 0.91,
+      "raw_content": "# Apple iPhone 13 128GB Blue Unlocked\n\nCondition: Used\n\nSold\n\nUS $312.00\n\nShipping: US $8.50\n\nSeller notes: light wear on frame\n\nSee more items\nHome | Help"
+    },
+    {
+      "title": "iPhone 13 128GB Price Guide - Swappa",
+      "url": "https://swappa.com/prices/apple-iphone-13",
+      "content": "Average sold prices for the iPhone 13 on Swappa range from $285 to $340 depending on condition.",
+      "score": 0.88,
+      "raw_content": "# iPhone 13 price guide\n\n| Condition | Avg sold |\n|---|---|\n| Good | $305 |\n| Mint | $338.50 |\n| Fair | $279 |\n\nNavigation links\nFooter"
+    },
+    {
+      "title": "Apple iPhone 13 - Mercari",
+      "url": "https://www.mercari.com/us/item/m1000002/",
+      "content": "iPhone 13 128GB blue unlocked, battery 86%, asking $1,049.99 bundle with accessories.",
+      "score": 0.7,
+      "raw_content": null
+    },
+    {
+      "title": "Used phones | OfferUp",
+      "url": "https://offerup.com/",
+      "content": "Browse local deals.",
+      "score": 0.2,
+      "raw_content": "Home\nCategories"
+    }
+  ],
+  "usage": { "credits": 1 },
+  "response_time": 1.1,
+  "request_id": "synthetic"
+}

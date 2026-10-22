@@ -4,7 +4,7 @@
  * into a suggested price and a gap.
  */
 import { describe, expect, it } from "vitest";
-import type { GroundedListing } from "@/lib/grounding";
+import type { GroundedListing } from "@/lib/sources";
 import {
   MAX_LISTINGS,
   appraisalInputSchema,
@@ -35,7 +35,7 @@ function listing(price: number, over: Partial<GroundedListing> = {}): GroundedLi
     platform: `Site ${counter}`,
     sourceIndex: counter,
     url: `https://site${counter}.example/item/${counter}`,
-    match: "listing",
+    match: "verified",
     ...over,
   };
 }
@@ -187,17 +187,37 @@ describe("what counts as a listing", () => {
     expect(result.market.count).toBe(5);
   });
 
-  it("takes at most three from any one site", () => {
-    const sameSite = many([100, 101, 102, 103, 104, 105], { platform: "eBay" });
-    const result = run(sameSite);
+  it("takes at most three from any one page", () => {
+    // Six prices read off one search page: that page is not six listings' worth
+    // of evidence.
+    const onePage = many([100, 101, 102, 103, 104, 105], {
+      platform: "eBay",
+      url: "https://www.ebay.com/sch/i.html?_nkw=iphone",
+    });
+    const result = run(onePage);
     expect(result.market.count).toBe(3);
     expect(result.platforms).toEqual([{ platform: "eBay", count: 3, median: 101 }]);
   });
 
+  it("does not cap a platform that supplies many separate pages", () => {
+    const manyPages = many([100, 101, 102, 103, 104, 105], { platform: "eBay" });
+    const result = run(manyPages);
+    expect(result.market.count).toBe(6);
+    expect(result.platforms).toEqual([{ platform: "eBay", count: 6, median: 102.5 }]);
+  });
+
+  it("keeps a repeated price from two different pages, and drops it from the same page", () => {
+    const a = listing(100, { title: "Same Phone", url: "https://a.example/1" });
+    const otherPage = { ...a, url: "https://b.example/2" };
+    const samePage = { ...a };
+    const result = run([a, otherPage, samePage, ...many([110, 120, 130])]);
+    expect(result.market.count).toBe(5);
+  });
+
   it("shows listings it cannot verify, dimmed, and leaves them out of the median", () => {
     const result = run([
-      ...many([100, 110, 120], { match: "listing" }),
-      ...many([500, 600], { match: "domain" }),
+      ...many([100, 110, 120], { match: "verified" }),
+      ...many([500, 600], { match: "unverified" }),
       ...many([700], { match: "none", url: null }),
     ]);
     expect(result.market.count).toBe(3);
@@ -207,7 +227,7 @@ describe("what counts as a listing", () => {
   });
 
   it("gives no price when the only listings it has are unverified", () => {
-    const result = run(many([100, 110, 120, 130, 140], { match: "domain" }));
+    const result = run(many([100, 110, 120, 130, 140], { match: "unverified" }));
     expect(result.market.tier).toBe("none");
     expect(result.listings).toHaveLength(5);
   });
