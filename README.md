@@ -75,6 +75,42 @@ searching itself and the model only reads what it finds.
 rare one) and prints what each stage found. It spends about 9 Tavily credits.
 `npm run spike -- --save` also records `tests/fixtures/tavily-sample.json`.
 
+### Backup model: DeepSeek (optional, not free)
+
+When Gemini's free quota runs out (429) or it is overloaded (503), the app can finish
+the request with DeepSeek instead. It is off unless `DEEPSEEK_API_KEY` is set; with no
+key a Gemini quota error is just reported, and the app stays free.
+
+- **It is not free.** DeepSeek is prepaid: model costs come off a topped-up balance (or
+  a granted one, which its docs do not promise), and at zero the API answers 402. So it
+  cannot bill past what is on the account, but it does need money on the account, which
+  is why it is an opt-in extra and not part of the free setup above. Prices are in CNY;
+  `deepseek-flash` was about 1–2 per million input tokens and 4–8 per million output
+  tokens when this was written, so an appraisal is a fraction of a cent.
+- **Text only.** No photo is ever sent to DeepSeek, so photos still go to Google alone.
+  The model is told in plain words that it cannot see them, and asked to have the person
+  describe wear in words. Its documentation lists image input for `deepseek-flash`, but
+  the request format is not in the API reference, so this does not guess one.
+- **The same instrument.** Protocol, phase instruction, schemas and parsing are shared
+  (`lib/prompts.ts`); the backup differs only in transport. Its JSON mode cannot enforce
+  a schema, so the schema is in the prompt and the same zod checks and the same verbatim
+  price check apply to its answers.
+- **What triggers it.** Only a Gemini quota error or overload, and for a reply only if
+  Gemini failed before saying anything: half of one reply from each model would be worse
+  than an error. Timeouts and malformed answers do not trigger it.
+- **It says so.** The browser is told when the backup answers and shows a notice; the
+  market card says which steps it took (`facts` is read from the messages alone, since
+  it cannot see photos; `reading` is the search results).
+- **Privacy.** Using it sends the conversation text, including what the person wrote
+  about the item, to DeepSeek's servers. The intake screen says so.
+- **If it fails too**, the error names both (Gemini's is the one classified) and says
+  what happened to the backup.
+
+`lib/model.ts` is the only place that decides this; the routes never call a model
+directly. **It has not yet been run against the real DeepSeek API**: it is written to
+the documentation and covered by tests that replace the network, so the first real
+call may need adjusting.
+
 ### Privacy
 
 On the free Gemini tier, what is sent to Gemini — the conversation and the photos —
@@ -189,6 +225,8 @@ being precise about rather than overclaiming.
 | `PROTOCOL_FILE` | `protocol_v2.md` | Which protocol to load |
 | `MAX_TURNS` | `20` | Per-conversation cap, guards the quota |
 | `TAVILY_API_KEY` | — | Required to look up the market; read only when an appraisal runs |
+| `DEEPSEEK_API_KEY` | — | Optional backup model; blank means none. Prepaid, not free |
+| `DEEPSEEK_MODEL` | `deepseek-flash` | Which DeepSeek model the backup uses |
 | `DAILY_SEARCH_BUDGET` | `40` | Tavily calls per UTC day, counted in memory |
 | `DAILY_MODEL_BUDGET` | `300` | Gemini calls per UTC day, counted in memory |
 
@@ -221,6 +259,8 @@ automatically.
 - **The verbatim check proves the price is in the page text, not that it belongs to
   that listing.** A page that lists several items can carry the same amount for a
   different one. It rules out invented, rounded and misread prices, not every mix-up.
+- **The backup cannot see photos**, so when it answers the condition is judged from
+  what the person writes, which is a weaker check than the photos.
 - **Free tiers move.** Gemini's free quota and Tavily's 1,000 credits can change, and
   a busy Gemini model can answer 503. Check both dashboards before a demo.
 - **A refresh loses an in-progress appraisal.** There is no database and no

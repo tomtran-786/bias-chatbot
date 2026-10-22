@@ -28,11 +28,11 @@ import { z } from "zod";
 import { BudgetExhaustedError, spend } from "@/lib/budget";
 import {
   MalformedAppraisalError,
+  ModelOverloadedError,
   ModelTimeoutError,
   RateLimitError,
-  extractFacts,
-  readListings,
 } from "@/lib/gemini";
+import { backupNote, extractFacts, primaryOf, readListings } from "@/lib/model";
 import {
   QUERY_COUNT,
   askingPriceSchema,
@@ -107,8 +107,13 @@ export async function POST(request: Request) {
     throw error;
   }
 
+  // Which steps the backup model took over, so the card can say so.
+  const backup: Array<"facts" | "reading"> = [];
+
   try {
-    const item = await extractFacts(transcript, checked.photos, intake);
+    const item = await extractFacts(transcript, checked.photos, intake, () => {
+      backup.push("facts");
+    });
 
     // Without a model name there is nothing to search for, and a search for
     // "phone" would return a market for the wrong thing. Send them back to the
@@ -117,7 +122,9 @@ export async function POST(request: Request) {
 
     const search = await searchListings(searchQueries(forSearch(item)));
     const sources = toSources(search.results);
-    const reading = await readListings(item, sources);
+    const reading = await readListings(item, sources, () => {
+      backup.push("reading");
+    });
 
     const raw: AppraisalInput = {
       item,
@@ -133,13 +140,26 @@ export async function POST(request: Request) {
       item,
       raw,
       queries: search.queries,
+      backup,
     };
     return NextResponse.json(body);
-  } catch (error) {
+  } catch (thrown) {
+    // Classified by Gemini's error even when the backup also failed: that is what
+    // the person ran into first. What happened to the backup goes in the reason.
+    const error = primaryOf(thrown);
+    const note = backupNote(thrown);
+
     // Both are "rate_limited" to the client, but which service said so is the
     // first thing anyone debugging a free tier needs to know.
     if (error instanceof RateLimitError) {
-      return refuse("rate_limited", 429, "Gemini is rate limiting this key (its free quota may be used up).");
+      return refuse(
+        "rate_limited",
+        429,
+        `Gemini is rate limiting this key (its free quota may be used up).${note}`,
+      );
+    }
+    if (error instanceof ModelOverloadedError) {
+      return refuse("appraisal_failed", 503, `Gemini is overloaded right now. Try again in a moment.${note}`);
     }
     if (error instanceof SearchRateLimitError) {
       return refuse("rate_limited", 429, "The search service is rate limiting this key.");
@@ -162,7 +182,7 @@ export async function POST(request: Request) {
     return refuse(
       "appraisal_failed",
       502,
-      error instanceof MalformedAppraisalError ? error.message : undefined,
+      error instanceof MalformedAppraisalError ? `${error.message}${note}` : undefined,
     );
   }
 }

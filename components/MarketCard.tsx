@@ -143,6 +143,17 @@ export function MarketCard({
             </ul>
           </div>
         ) : null}
+        {appraisal.backup.length > 0 ? (
+          <p className="text-xs leading-relaxed text-ink-secondary">
+            Gemini’s quota was used up, so DeepSeek, the backup model, did part of
+            this:{" "}
+            {appraisal.backup.includes("facts")
+              ? "it worked out the item from your messages alone, since it cannot see photos"
+              : null}
+            {appraisal.backup.length === 2 ? ", and " : null}
+            {appraisal.backup.includes("reading") ? "it read the search results" : null}.
+          </p>
+        ) : null}
         <p className="text-xs leading-relaxed text-ink-muted">
           Search results via Tavily, read by an AI model. A price is counted only
           if it appears word for word in the page text the search returned. They

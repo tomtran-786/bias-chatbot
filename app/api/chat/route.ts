@@ -26,11 +26,12 @@ import { z } from "zod";
 import { BudgetExhaustedError, spend } from "@/lib/budget";
 import { env } from "@/lib/env";
 import {
+  ModelOverloadedError,
   RateLimitError,
-  streamReply,
   type TranscriptMessage,
   type TurnContext,
 } from "@/lib/gemini";
+import { primaryOf, streamReply } from "@/lib/model";
 import {
   MAX_PHOTOS,
   askingPriceSchema,
@@ -70,7 +71,9 @@ const bodySchema = z.object({
 type Event =
   | { t: "text"; v: string }
   | { t: "stage"; v: Stage }
-  | { t: "error"; code: "rate_limited" | "server_error" };
+  /** Told to the person when the backup model is the one answering. */
+  | { t: "notice"; v: "backup_model" }
+  | { t: "error"; code: "rate_limited" | "model_overloaded" | "server_error" };
 
 export async function POST(request: Request) {
   const parsed = bodySchema.safeParse(await request.json().catch(() => null));
@@ -171,13 +174,19 @@ export async function POST(request: Request) {
       });
 
       try {
-        for await (const chunk of streamReply(history, photos, phase, context)) {
+        const onFallback = () => send({ t: "notice", v: "backup_model" });
+        for await (const chunk of streamReply(history, photos, phase, context, onFallback)) {
           filter.push(chunk);
         }
         filter.end();
       } catch (error) {
-        if (error instanceof RateLimitError) {
+        // Classified by Gemini's error even when the backup failed too: that is
+        // the failure the person ran into first, and the backup's is logged.
+        const cause = primaryOf(error);
+        if (cause instanceof RateLimitError) {
           send({ t: "error", code: "rate_limited" });
+        } else if (cause instanceof ModelOverloadedError) {
+          send({ t: "error", code: "model_overloaded" });
         } else {
           console.error("chat turn failed", error);
           send({ t: "error", code: "server_error" });

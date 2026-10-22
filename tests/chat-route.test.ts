@@ -17,7 +17,7 @@ vi.mock("@/lib/gemini", async (importOriginal) => {
 });
 
 const { POST: chat } = await import("@/app/api/chat/route");
-const { RateLimitError } = await import("@/lib/gemini");
+const { ModelOverloadedError, RateLimitError } = await import("@/lib/gemini");
 const { env } = await import("@/lib/env");
 const { FACT_COUNT } = await import("@/lib/stages");
 const { MAX_PHOTO_BYTES, MAX_PHOTOS } = await import("@/lib/item");
@@ -391,5 +391,104 @@ describe("the daily budget", () => {
     await postChat({ ...base, phase: "nonsense" }); // 400
     await postChat({ ...base, phase: "verdict" }); // 409: no market
     expect((await postChat(base)).status).toBe(200);
+  });
+});
+
+describe("the backup model", () => {
+  const sseBody = (...pieces: string[]) =>
+    new Response(
+      pieces.map((text) => `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`).join("") + "data: [DONE]\n\n",
+      { status: 200 },
+    );
+
+  /** Gemini out of quota before saying a word. */
+  const geminiOutOfQuota = () =>
+    streamReply.mockImplementation(async function* () {
+      throw new RateLimitError();
+    });
+
+  afterEach(() => {
+    delete process.env.DEEPSEEK_API_KEY;
+    vi.unstubAllGlobals();
+  });
+
+  it("answers in Gemini's place, tells the browser first, and keeps markers out of the text", async () => {
+    process.env.DEEPSEEK_API_KEY = "sk-test";
+    geminiOutOfQuota();
+    const fetchStub = vi.fn(async () => sseBody("Got it. ", "That is all I need.[[STAGE:commit]]"));
+    vi.stubGlobal("fetch", fetchStub);
+
+    const { events } = await postChat({ ...base, transcript: conversation(FACT_COUNT - 1) });
+
+    expect(events[0]).toEqual({ t: "notice", v: "backup_model" });
+    expect(texts(events)).toBe("Got it. That is all I need.");
+    expect(events).toContainEqual({ t: "stage", v: "commit" });
+    expect(events.some((e) => e.t === "error")).toBe(false);
+  });
+
+  it("sends DeepSeek the conversation as text and never a photo", async () => {
+    process.env.DEEPSEEK_API_KEY = "sk-test";
+    geminiOutOfQuota();
+    const fetchStub = vi.fn(async () => sseBody("ok"));
+    vi.stubGlobal("fetch", fetchStub);
+
+    await postChat({ ...base, photos: [photo("p1", 64)] });
+
+    const sent = (fetchStub.mock.calls[0] as unknown as [string, RequestInit])[1].body as string;
+    expect(sent).not.toContain(photo("p1", 64).data);
+    expect(sent).toMatch(/cannot see them/);
+  });
+
+  it("does not use it for the verdict's figures any differently: the same context, text only", async () => {
+    process.env.DEEPSEEK_API_KEY = "sk-test";
+    geminiOutOfQuota();
+    const fetchStub = vi.fn(async () => sseBody("## Suggested price\n$300", "[[STAGE:complete]]"));
+    vi.stubGlobal("fetch", fetchStub);
+
+    const { events } = await postChat({
+      ...base,
+      phase: "verdict",
+      askingPrice: asking,
+      appraisal,
+      transcript: conversation(FACT_COUNT),
+      message: "what do you suggest?",
+    });
+
+    const system = JSON.parse((fetchStub.mock.calls[0] as unknown as [string, RequestInit])[1].body as string).messages[0].content;
+    expect(system).toContain("Market median: $300");
+    expect(events).toContainEqual({ t: "stage", v: "complete" });
+  });
+
+  it("is not used without a key: the quota error reaches the person as it did before", async () => {
+    geminiOutOfQuota();
+    const fetchStub = vi.fn();
+    vi.stubGlobal("fetch", fetchStub);
+
+    const { events } = await postChat(base);
+
+    expect(events).toEqual([{ t: "error", code: "rate_limited" }]);
+    expect(fetchStub).not.toHaveBeenCalled();
+  });
+
+  it("reports an overloaded Gemini with its own code", async () => {
+    streamReply.mockImplementation(async function* () {
+      throw new ModelOverloadedError();
+    });
+    const { events } = await postChat(base);
+    expect(events).toContainEqual({ t: "error", code: "model_overloaded" });
+  });
+
+  it("classifies by Gemini's failure when the backup fails too, and still tells the browser the backup was tried", async () => {
+    process.env.DEEPSEEK_API_KEY = "sk-test";
+    geminiOutOfQuota();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 402 })));
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const { events } = await postChat(base);
+
+    expect(events).toEqual([
+      { t: "notice", v: "backup_model" },
+      { t: "error", code: "rate_limited" },
+    ]);
   });
 });

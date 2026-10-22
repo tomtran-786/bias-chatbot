@@ -56,6 +56,19 @@ export const env = {
     return required("TAVILY_API_KEY");
   },
   /**
+   * The backup model, used only when Gemini's quota is out. Optional: with no key
+   * the app simply has no backup and a Gemini quota error is reported as is.
+   * DeepSeek is prepaid, so unlike a metered plan it cannot bill past the balance
+   * that was put on the account.
+   */
+  get deepseekApiKey(): string | undefined {
+    const key = process.env.DEEPSEEK_API_KEY?.trim();
+    return key ? key : undefined;
+  },
+  get deepseekModel() {
+    return process.env.DEEPSEEK_MODEL ?? "deepseek-flash";
+  },
+  /**
    * In-memory daily ceilings on outbound calls (see lib/budget.ts). A tripwire
    * against a loop or a runaway client, not the real spending guard: the counter
    * resets when the process restarts. The real guard is the account tier — a

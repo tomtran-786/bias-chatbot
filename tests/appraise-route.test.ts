@@ -455,3 +455,156 @@ describe("failures", () => {
     expect(json.reason).toMatch(/not valid JSON/);
   });
 });
+
+describe("the backup model", () => {
+  const quota = () => new ApiError({ message: "quota", status: 429 });
+
+  /** DeepSeek, told apart by what the request asks for, like the Gemini mock above. */
+  function deepseekAnswers(over: { facts?: unknown; reading?: unknown } = {}) {
+    const calls: Array<{ system: string; user: string; body: string }> = [];
+    const fetchStub = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(init.body as string);
+      const system = body.messages[0].content as string;
+      calls.push({ system, user: body.messages.at(-1).content, body: init.body as string });
+      const reading = system.includes('"listings"');
+      const content = reading
+        ? (over.reading ?? { listings, newPrice: 700, position: "typical", positionEvidence: "light wear" })
+        : (over.facts ?? FACTS);
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }] }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchStub);
+    return { calls, fetchStub };
+  }
+
+  beforeEach(() => {
+    process.env.DEEPSEEK_API_KEY = "sk-test-key";
+  });
+  afterEach(() => {
+    delete process.env.DEEPSEEK_API_KEY;
+    vi.unstubAllGlobals();
+  });
+
+  it("carries the whole appraisal when Gemini's quota is out, and says which steps it took", async () => {
+    generateContent.mockRejectedValue(quota());
+    const { calls } = deepseekAnswers();
+
+    const { status, json } = await post(body);
+
+    expect(status).toBe(200);
+    expect(json.backup).toEqual(["facts", "reading"]);
+    expect(json.market).toMatchObject({ tier: "full", count: 5, median: 300 });
+    expect(json.item.model).toBe("iPhone 13");
+    expect(calls).toHaveLength(2);
+  });
+
+  it("takes over a single step when only that one runs out", async () => {
+    generateContent.mockImplementation(async (request: Request) => {
+      const properties = (request.config?.responseJsonSchema as { properties: object }).properties;
+      if ("listings" in properties) throw quota();
+      return { text: JSON.stringify(FACTS) };
+    });
+    deepseekAnswers();
+
+    const { status, json } = await post(body);
+    expect(status).toBe(200);
+    expect(json.backup).toEqual(["reading"]);
+  });
+
+  it("takes over for an overloaded Gemini as well", async () => {
+    generateContent.mockRejectedValue(new ApiError({ message: "high demand", status: 503 }));
+    deepseekAnswers();
+    const { status, json } = await post(body);
+    expect(status).toBe(200);
+    expect(json.backup).toEqual(["facts", "reading"]);
+  });
+
+  it("reports no backup when Gemini answered", async () => {
+    deepseekAnswers();
+    const { json } = await post(body);
+    expect(json.backup).toEqual([]);
+  });
+
+  it("is never sent a photo, and the reading is never sent what they paid or locked in", async () => {
+    generateContent.mockRejectedValue(quota());
+    const { calls } = deepseekAnswers();
+    await post(body);
+
+    for (const call of calls) {
+      expect(call.body).not.toContain(photo.data);
+      expect(call.body).not.toContain(photo.id);
+      expect(call.body).not.toContain(String(LOCKED));
+    }
+    const [facts, reading] = calls;
+    expect(facts.body).toContain(String(PAID)); // the facts call reads the conversation
+    expect(reading.body).not.toContain(String(PAID));
+    expect(facts.system).toMatch(/cannot see their photos/);
+    // and the search queries are built the same way whichever model wrote the facts
+    for (const query of searchListings.mock.calls[0][0] as string[]) {
+      expect(query).not.toMatch(/849|637|\$/);
+    }
+  });
+
+  it("still checks every price against its source, whoever read the page", async () => {
+    generateContent.mockRejectedValue(quota());
+    deepseekAnswers({
+      reading: {
+        listings: listings.map((l, i) => (i === 2 ? { ...l, priceText: "$320" } : l)),
+        position: "typical",
+        positionEvidence: "",
+      },
+    });
+    const { json } = await post(body);
+    expect(json.listings.find((l: { priceText: string }) => l.priceText === "$320")).toMatchObject({ match: "unverified" });
+    expect(json.market.count).toBe(4);
+  });
+
+  it("says what happened to both when the backup fails too", async () => {
+    generateContent.mockRejectedValue(quota());
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 402 })));
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const { status, json } = await post(body);
+
+    expect(status).toBe(429);
+    expect(json.error).toBe("rate_limited");
+    expect(json.reason).toMatch(/Gemini is rate limiting/);
+    expect(json.reason).toMatch(/backup model \(DeepSeek\) failed too: The DeepSeek balance is empty/);
+    expect(searchListings).not.toHaveBeenCalled();
+  });
+
+  it("explains an unreadable answer from the backup", async () => {
+    generateContent.mockRejectedValue(quota());
+    deepseekAnswers({ facts: { model: 3 } });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { json } = await post(body);
+    expect(json.error).toBe("rate_limited");
+    expect(json.reason).toMatch(/did not match the schema/);
+  });
+
+  it("does nothing different with no key: the quota error is reported, and nothing is called", async () => {
+    delete process.env.DEEPSEEK_API_KEY;
+    generateContent.mockRejectedValue(quota());
+    const fetchStub = vi.fn();
+    vi.stubGlobal("fetch", fetchStub);
+
+    const { status, json } = await post(body);
+
+    expect(status).toBe(429);
+    expect(json.reason).not.toMatch(/backup/);
+    expect(fetchStub).not.toHaveBeenCalled();
+  });
+
+  it("does not take over for a timeout or a bad answer", async () => {
+    const fetchStub = vi.fn();
+    vi.stubGlobal("fetch", fetchStub);
+
+    generateContent.mockRejectedValue(Object.assign(new Error("aborted"), { name: "TimeoutError" }));
+    expect((await post(body)).status).toBe(504);
+
+    generateContent.mockReset();
+    generateContent.mockResolvedValue({ text: "not json" });
+    expect((await post(body)).status).toBe(502);
+
+    expect(fetchStub).not.toHaveBeenCalled();
+  });
+});

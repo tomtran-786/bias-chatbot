@@ -246,17 +246,25 @@ export function searchQueries(
   return [`${name} used sold price`, `${name} used for sale`];
 }
 
-/** The intake as the model receives it, appended to the system instruction. */
-export function describeIntake(intake: Intake, photoCount: number): string {
-  return [
-    "## What they are selling",
-    "",
-    `**In their words:** ${intake.item}`,
-    "",
-    photoCount > 0
-      ? `They attached ${photoCount} photo${photoCount === 1 ? "" : "s"}, shown to you alongside their messages. What they say about condition must be checked against what you can see.`
-      : "They have not attached any photos yet.",
-  ].join("\n");
+/**
+ * The intake as the model receives it, appended to the system instruction.
+ *
+ * `canSeePhotos` is false for a text-only backup model. It is told so in plain
+ * words, because a model that is told photos exist and cannot see them will
+ * describe them anyway.
+ */
+export function describeIntake(
+  intake: Intake,
+  photoCount: number,
+  canSeePhotos = true,
+): string {
+  const photos =
+    photoCount === 0
+      ? "They have not attached any photos yet."
+      : canSeePhotos
+        ? `They attached ${photoCount} photo${photoCount === 1 ? "" : "s"}, shown to you alongside their messages. What they say about condition must be checked against what you can see.`
+        : `They attached ${photoCount} photo${photoCount === 1 ? "" : "s"}, but you are a text-only model and cannot see them. Never describe them or say you have seen them. Where you would normally check what they say about condition against the photos, say you cannot check it, and ask them to describe any wear, damage and what is included in words.`;
+  return ["## What they are selling", "", `**In their words:** ${intake.item}`, "", photos].join("\n");
 }
 
 /** The extracted facts as the model receives them on the verdict turn. */

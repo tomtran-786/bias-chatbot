@@ -72,7 +72,9 @@ export function IntakeForm({
           runs on Google’s free Gemini tier, where what is sent — your messages
           and photos included — may be used by Google to improve its products.
           Leave out faces, addresses, documents and anything you would not want
-          that done with.
+          that done with. If a backup is set up and Gemini’s quota runs out, the
+          text of the conversation — never the photos — may go to DeepSeek instead,
+          and you are told when it does.
         </p>
       </div>
 

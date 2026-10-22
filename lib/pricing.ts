@@ -386,6 +386,11 @@ export type AppraiseResponse = Appraisal & {
   raw: AppraisalInput;
   /** The searches that were run, so the person can see what was looked up. */
   queries: string[];
+  /**
+   * Which steps the backup model answered because Gemini could not. Empty
+   * normally. The card says so, since the backup cannot see photos.
+   */
+  backup: Array<"facts" | "reading">;
 };
 
 const dollars = new Intl.NumberFormat("en-US", {

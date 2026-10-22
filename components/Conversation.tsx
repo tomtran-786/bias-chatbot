@@ -47,7 +47,8 @@ type ChatError =
   | "turn_limit"
   | "out_of_order"
   | "payload_too_large"
-  | "budget_exhausted";
+  | "budget_exhausted"
+  | "model_overloaded";
 
 const ERROR_COPY: Record<ChatError, string> = {
   rate_limited:
@@ -59,6 +60,8 @@ const ERROR_COPY: Record<ChatError, string> = {
     "A photo is too large to send. Remove it and attach a smaller one.",
   budget_exhausted:
     "This app’s daily limit on AI calls is used up. It resets at midnight UTC, or when the server restarts.",
+  model_overloaded:
+    "The AI model is overloaded right now. Wait a moment and send again — nothing you wrote is lost.",
 };
 
 /** What the market lookup can refuse with, in words a person can act on. */
@@ -120,6 +123,8 @@ export function Conversation() {
   const [appraising, setAppraising] = useState(false);
   const [error, setError] = useState<ChatError | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  // Set when the backup model has answered, and kept: every later reply may be it.
+  const [backupModel, setBackupModel] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const opened = useRef(new Set<Stage>());
@@ -234,7 +239,8 @@ export function Conversation() {
           const event = JSON.parse(line) as
             | { t: "text"; v: string }
             | { t: "stage"; v: Stage }
-            | { t: "error"; code: "rate_limited" | "server_error" };
+            | { t: "notice"; v: "backup_model" }
+            | { t: "error"; code: "rate_limited" | "model_overloaded" | "server_error" };
 
           if (event.t === "text") {
             generated += event.v;
@@ -246,6 +252,8 @@ export function Conversation() {
             });
           } else if (event.t === "stage") {
             stages.push(event.v);
+          } else if (event.t === "notice") {
+            setBackupModel(true);
           } else {
             failed = true;
             setError(event.code);
@@ -335,6 +343,7 @@ export function Conversation() {
 
       setAskingPrice(asking);
       setAppraisal(body as AppraiseResponse);
+      if ((body as AppraiseResponse).backup.length > 0) setBackupModel(true);
       setAppraisedAt(messages.length);
       setPhase("appraise");
     } catch {
@@ -474,6 +483,13 @@ export function Conversation() {
             />
           ))}
 
+          {backupModel ? (
+            <Notice>
+              Gemini’s quota is used up, so this is being answered by DeepSeek, the
+              backup model. It reads text only and cannot see your photos — describe
+              any wear or damage in words.
+            </Notice>
+          ) : null}
           {error ? <Notice>{ERROR_COPY[error]}</Notice> : null}
           {failure ? <Notice>{failure}</Notice> : null}
           {needsRetry ? (
