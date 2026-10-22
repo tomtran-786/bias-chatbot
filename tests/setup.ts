@@ -12,10 +12,12 @@ if (existsSync(".env.local")) process.loadEnvFile(".env.local");
 process.env.GEMINI_API_KEY = "test-key-not-real";
 process.env.TAVILY_API_KEY = "tvly-test-key-not-real";
 
-// The backup model is off unless a test turns it on with a fake key, so a real key
+// The backup models are off unless a test turns one on with a fake key, so a real key
 // in .env.local can never make a test call out.
 delete process.env.DEEPSEEK_API_KEY;
 delete process.env.DEEPSEEK_MODEL;
+delete process.env.OPENROUTER_API_KEY;
+delete process.env.OPENROUTER_MODELS;
 
 // Every test starts with every Gemini model healthy and the default chain in place,
 // whatever a previous test refused or whatever is in .env.local.

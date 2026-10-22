@@ -34,14 +34,25 @@ const DEFAULT_FALLBACK_MODELS = [
 ];
 
 /**
- * Free OpenRouter models that, per its public model list, accept the JSON response
- * format. The list changes; override with OPENROUTER_MODELS. The last entry is
- * OpenRouter's own router over its free models.
+ * Free OpenRouter models, from four different upstream providers so that one provider's
+ * busy pool does not take the whole list down, in the order they proved reliable on the
+ * first live run. Free models are flaky: at any moment roughly half the calls were
+ * refused upstream (429 from a shared pool, 502 "failed to generate completions"). All
+ * four returned valid JSON with reasoning off; the first read listings and streamed
+ * best. A refused attempt is not counted against the 50-a-day cap (only answers are),
+ * so a longer list costs a little latency and no quota.
+ *
+ * Not in the list on purpose:
+ *   - openrouter/free: a router over every free model, which once picked a safety
+ *     classifier that answered "User Safety: safe". Allowed if you add it.
+ *   - nvidia/nemotron-3-super-120b-a12b: its provider answered 404 for the account.
+ * The free list changes; override with OPENROUTER_MODELS.
  */
 const DEFAULT_OPENROUTER_MODELS = [
-  "nvidia/nemotron-3-super-120b-a12b:free",
+  "dots-studio/dots-3-note-preview:free",
+  "nvidia/nemotron-3.5-super-vl:free",
+  "xingchen-agi/xing4.0-29b-a4b:free",
   "google/gemma-4-31b-it:free",
-  "openrouter/free",
 ];
 
 export const env = {

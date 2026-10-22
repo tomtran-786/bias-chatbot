@@ -58,24 +58,78 @@ export type BackendSpec = {
   apiKey: () => string | undefined;
   /** Models this backend may use, in the order to try them. Already filtered; empty means unusable. */
   models: () => string[];
-  /** Merged into every request body. */
   extraBody?: Record<string, unknown>;
-  /** Appended to the message for a model the account cannot use (404). */
-  notFoundHint?: string;
+  /**
+   * Appended to a 404 only when the provider's own message mentions a data policy or
+   * privacy setting, since otherwise it would send someone to the wrong place.
+   */
+  privacyHint?: string;
+  /** Sent for any model, e.g. to turn a reasoning mode off. */
 };
+
+/** " (detail)" for a message, or nothing. */
+const withDetail = (detail: string) => (detail ? ` (${detail})` : "");
+
+/** One line, no control characters, bounded: provider text goes into messages shown to people. */
+function tidy(text: string): string {
+  return (
+    text
+      // A link cut off at the length limit is worse than no link, and the one providers
+      // append ("add your own key…") is not something this app can act on.
+      .replace(/https?:\/\/\S+/g, "")
+      .replace(/[\u0000-\u001f\u007f]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 180)
+  );
+}
+
+/**
+ * What the provider said was wrong, from an error body, for the message.
+ *
+ * OpenRouter wraps an upstream provider's complaint in `error.metadata.raw` and names
+ * the provider, which is the part worth reading ("Nvidia: Function … not found for
+ * account", "temporarily rate-limited upstream"); its own `error.message` is usually
+ * just "Provider returned error". Never throws, and returns "" when there is nothing
+ * useful, so a plain error body changes no message.
+ */
+export function detailFromBody(body: unknown): string {
+  const error = (body as { error?: { message?: unknown; metadata?: { raw?: unknown; provider_name?: unknown } } } | null)?.error;
+  if (!error || typeof error !== "object") return "";
+
+  let raw = error.metadata?.raw;
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      raw = parsed?.detail ?? parsed?.message ?? parsed?.title ?? raw;
+    } catch {
+      // not JSON: use it as written
+    }
+  }
+  const message = typeof error.message === "string" && error.message !== "Provider returned error" ? error.message : null;
+  const provider = typeof error.metadata?.provider_name === "string" ? error.metadata.provider_name : null;
+  const said = [typeof raw === "string" ? raw : null, message].filter(Boolean).join("; ");
+  return tidy(provider && said ? `${provider}: ${said}` : (said || provider || ""));
+}
 
 /** The balance or credits are empty (402). Nothing is charged; it needs topping up. */
 export class BackendQuotaError extends Error {
-  constructor(readonly provider: string) {
-    super(`The ${provider} balance is empty`);
+  constructor(
+    readonly provider: string,
+    detail = "",
+  ) {
+    super(`The ${provider} balance is empty${withDetail(detail)}`);
     this.name = "BackendQuotaError";
   }
 }
 
 /** Sending too fast, or a daily cap reached (429). */
 export class BackendRateLimitError extends Error {
-  constructor(readonly provider: string) {
-    super(`${provider} is rate limiting this key`);
+  constructor(
+    readonly provider: string,
+    detail = "",
+  ) {
+    super(`${provider} is rate limiting this key${withDetail(detail)}`);
     this.name = "BackendRateLimitError";
   }
 }
@@ -120,21 +174,24 @@ export class BackendNotFoundError extends BackendFailedError {
 
 type Message = { role: "system" | "user" | "assistant"; content: string };
 
-/** The error an HTTP status stands for. */
-function errorFor(spec: BackendSpec, status: number, model: string): Error {
-  if (status === 401) return new BackendUnavailableError(spec.name, `${spec.name} rejected the API key`);
-  if (status === 402) return new BackendQuotaError(spec.name);
-  if (status === 429) return new BackendRateLimitError(spec.name);
+/** The error an HTTP status stands for, with whatever the provider said about it. */
+function errorFor(spec: BackendSpec, status: number, model: string, detail = ""): Error {
+  if (status === 401) {
+    return new BackendUnavailableError(spec.name, `${spec.name} rejected the API key${withDetail(detail)}`);
+  }
+  if (status === 402) return new BackendQuotaError(spec.name, detail);
+  if (status === 429) return new BackendRateLimitError(spec.name, detail);
   if (status === 404) {
+    const hint = /polic|privacy/i.test(detail) ? (spec.privacyHint ?? "") : "";
     return new BackendNotFoundError(
       spec.name,
-      `${spec.name} has no model "${model}" available to this account${spec.notFoundHint ?? ""}`,
+      `${spec.name} has no usable endpoint for "${model}"${withDetail(detail)}${hint}`,
     );
   }
   if (status === 408 || status === 502 || status === 503 || status === 529) {
-    return new BackendOverloadedError(spec.name, `${spec.name} answered ${status}`);
+    return new BackendOverloadedError(spec.name, `${spec.name} answered ${status}${withDetail(detail)}`);
   }
-  return new BackendFailedError(spec.name, `${spec.name} answered ${status}`);
+  return new BackendFailedError(spec.name, `${spec.name} answered ${status}${withDetail(detail)}`);
 }
 
 /**
@@ -145,9 +202,10 @@ function errorInBody(spec: BackendSpec, body: unknown, model: string): Error | n
   const error = (body as { error?: { code?: unknown; message?: unknown } } | null)?.error;
   if (!error) return null;
   const code = typeof error.code === "number" ? error.code : Number(error.code);
+  const detail = detailFromBody(body);
   return Number.isFinite(code) && code >= 400
-    ? errorFor(spec, code, model)
-    : new BackendFailedError(spec.name, `${spec.name} reported an error`);
+    ? errorFor(spec, code, model, detail)
+    : new BackendFailedError(spec.name, `${spec.name} reported an error${withDetail(detail)}`);
 }
 
 /** One request. Throws one of the error classes above, never anything else. */
@@ -182,7 +240,12 @@ async function send(
     );
   }
 
-  if (!response.ok) throw errorFor(spec, response.status, model);
+  if (!response.ok) {
+    // The status says what kind of failure it was; the body says why, and for a free
+    // upstream provider that is most of what anyone debugging it needs.
+    const body = await response.json().catch(() => null);
+    throw errorFor(spec, response.status, model, detailFromBody(body));
+  }
   return response;
 }
 
@@ -263,7 +326,16 @@ async function completeJson(
         fetchImpl,
       );
 
-      const raw = await response.json().catch(() => null);
+      let raw: unknown = null;
+      try {
+        raw = await response.json();
+      } catch (error) {
+        // The deadline can pass while the body is still arriving: that is a timeout,
+        // not a response that could not be read.
+        if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+          throw new BackendFailedError(spec.name, `${spec.name} timed out`);
+        }
+      }
       const failure = errorInBody(spec, raw, model);
       if (failure) throw failure;
       const parsed = completionSchema.safeParse(raw);

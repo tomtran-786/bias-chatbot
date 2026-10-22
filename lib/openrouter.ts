@@ -10,8 +10,16 @@
  * sent. If that leaves nothing, OpenRouter reports itself as not configured.
  *
  * Free models are capped (20 requests a minute, 50 a day on an account that has
- * bought fewer than 10 credits, 1,000 a day above that) and the list changes; when one
- * is refused the next in `OPENROUTER_MODELS` is tried.
+ * bought fewer than 10 credits, 1,000 a day above that), share their upstream
+ * providers' pools with everyone else on the free tier, and come and go; when one is
+ * refused the next in `OPENROUTER_MODELS` is tried.
+ *
+ * Learned from the first live run, and why the default list is what it is: a model can
+ * 404 for one account from its provider ("Function … not found for account"), another
+ * 429s whenever its provider's shared free pool is busy, and `openrouter/free` routes
+ * to whatever is free that moment, including a safety classifier that answered
+ * "User Safety: safe" instead of JSON. So the defaults are named models from different
+ * providers, and the router is allowed but not default.
  *
  * Text only, like every backup: no photo is ever sent.
  */
@@ -46,6 +54,11 @@ export const openrouter = createBackend({
   endpoint: "https://openrouter.ai/api/v1/chat/completions",
   apiKey: () => env.openrouterApiKey,
   models: () => allowedModels(env.openrouterModels),
-  notFoundHint:
-    ". Free models can be removed, and may need your privacy settings at https://openrouter.ai/settings/privacy to allow the provider to see prompts",
+  // Reasoning models spend their whole token budget thinking before they write a word,
+  // which on a free model means a minute of nothing and then an empty reply (seen live).
+  // Nothing here reads the reasoning. A model that cannot disable it answers 400 with
+  // the reason; the models in the default list can.
+  extraBody: { reasoning: { effort: "none" } },
+  privacyHint:
+    ". Free models can need your privacy settings at https://openrouter.ai/settings/privacy to allow the provider to see prompts",
 });

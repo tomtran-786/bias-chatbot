@@ -9,6 +9,7 @@ import {
   BackendQuotaError,
   BackendRateLimitError,
   BackendUnavailableError,
+  detailFromBody,
 } from "@/lib/backup";
 import { env } from "@/lib/env";
 import { allowedModels, isFreeModel, openrouter } from "@/lib/openrouter";
@@ -214,10 +215,62 @@ describe("down the list of free models", () => {
     await expect(ask(status(500))).rejects.toBeInstanceOf(BackendFailedError);
   });
 
-  it("explains a 404 in terms of this account's settings", async () => {
-    const error = (await openrouter.extractFacts(transcript, intake, stub(status(404), status(404))).catch((e: Error) => e)) as Error;
-    expect(error.message).toMatch(/no model "free-/);
-    expect(error.message).toMatch(/privacy settings/);
+  // The shapes below are what OpenRouter really answered during the first live run.
+  const upstream404 = new Response(
+    JSON.stringify({
+      error: {
+        message: "Provider returned error",
+        code: 404,
+        metadata: {
+          raw: JSON.stringify({ status: 404, title: "Not Found", detail: "Function 'ac74040f': Not found for account 'abc'" }),
+          provider_name: "Nvidia",
+        },
+      },
+    }),
+    { status: 404 },
+  );
+  const upstream429 = () =>
+    new Response(
+      JSON.stringify({
+        error: {
+          message: "Provider returned error",
+          code: 429,
+          metadata: {
+            raw: "google/gemma-4-31b-it:free is temporarily rate-limited upstream. Please retry shortly.",
+            provider_name: "Google AI Studio",
+            limit_source: "upstream_provider_shared_pool",
+          },
+        },
+      }),
+      { status: 429 },
+    );
+
+  it("says what the provider said about a 404, rather than guessing at the account's settings", async () => {
+    const error = (await openrouter.extractFacts(transcript, intake, stub(upstream404.clone(), upstream404.clone())).catch((e: Error) => e)) as Error;
+    expect(error).toBeInstanceOf(BackendNotFoundError);
+    expect(error.message).toContain("Nvidia: Function 'ac74040f': Not found for account");
+    expect(error.message).not.toMatch(/privacy settings/); // that was not the cause, and would send someone to the wrong place
+  });
+
+  it("points at the privacy settings only when the provider's own message is about a data policy", async () => {
+    const policy = () =>
+      new Response(JSON.stringify({ error: { message: "No endpoints found matching your data policy (Free model training)", code: 404 } }), { status: 404 });
+    const error = (await openrouter.extractFacts(transcript, intake, stub(policy(), policy())).catch((e: Error) => e)) as Error;
+    expect(error.message).toMatch(/matching your data policy/);
+    expect(error.message).toMatch(/openrouter\.ai\/settings\/privacy/);
+  });
+
+  it("names the upstream provider behind a rate limit", async () => {
+    const error = (await openrouter.extractFacts(transcript, intake, stub(upstream429(), upstream429())).catch((e: Error) => e)) as Error;
+    expect(error).toBeInstanceOf(BackendRateLimitError);
+    expect(error.message).toMatch(/Google AI Studio: .*temporarily rate-limited upstream/);
+  });
+
+  it("says why a model that must reason refused to have reasoning switched off", async () => {
+    const mandatory = new Response(JSON.stringify({ error: { message: "Reasoning is mandatory for this endpoint and cannot be disabled.", code: 400 } }), { status: 400 });
+    const error = (await openrouter.extractFacts(transcript, intake, stub(mandatory)).catch((e: Error) => e)) as Error;
+    expect(error).toBeInstanceOf(BackendFailedError);
+    expect(error.message).toMatch(/Reasoning is mandatory/);
   });
 
   it("reports a rate limit over an overload when every model refused, naming neither as the only cause", async () => {
@@ -289,5 +342,105 @@ describe("a streamed reply", () => {
     ).rejects.toBeInstanceOf(BackendFailedError);
     expect(seen).toBe("half");
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("reasoning", () => {
+  it("is switched off on every request, since it only spends the token budget before a word is written", async () => {
+    const fetchImpl = stub(completion(JSON.stringify(FACTS)));
+    await openrouter.extractFacts(transcript, intake, fetchImpl);
+    expect(bodyOf(fetchImpl).reasoning).toEqual({ effort: "none" });
+  });
+
+  it("is also off for a streamed reply", async () => {
+    const fetchImpl = stub(new Response("data: [DONE]\n\n"));
+    await openrouter.streamReply(transcript, "probe", { intake, photoCount: 0 }, fetchImpl).next().catch(() => {});
+    expect(bodyOf(fetchImpl).reasoning).toEqual({ effort: "none" });
+  });
+
+  it("is never shown to the person if a model streams it anyway", async () => {
+    const reasoningThenAnswer = new Response(
+      [
+        { choices: [{ delta: { content: "", reasoning: "The user wants a greeting." } }] },
+        { choices: [{ delta: { content: "", reasoning_details: [{ type: "reasoning.text", text: "more thinking" }] } }] },
+        { choices: [{ delta: { content: "Hello" } }] },
+        { choices: [{ delta: { content: " there" } }] },
+      ].map((event) => `data: ${JSON.stringify(event)}\n\n`).join("") + "data: [DONE]\n\n",
+      { status: 200 },
+    );
+    let text = "";
+    for await (const chunk of openrouter.streamReply(transcript, "probe", { intake, photoCount: 0 }, stub(reasoningThenAnswer))) text += chunk;
+    expect(text).toBe("Hello there");
+  });
+
+  it("treats a stream that was all reasoning and no answer as a failure, and moves to the next model", async () => {
+    const onlyReasoning = new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: "", reasoning: "thinking…" } }] })}\n\ndata: [DONE]\n\n`, { status: 200 });
+    const answer = new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n\ndata: [DONE]\n\n`, { status: 200 });
+    const fetchImpl = stub(onlyReasoning, answer);
+    let text = "";
+    for await (const chunk of openrouter.streamReply(transcript, "probe", { intake, photoCount: 0 }, fetchImpl)) text += chunk;
+    expect(text).toBe("ok");
+    expect(modelsAsked(fetchImpl)).toEqual([A, B]);
+  });
+});
+
+describe("a deadline that passes while the body is still arriving", () => {
+  it("is a timeout, not a response that could not be read", async () => {
+    const slow = new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.error(Object.assign(new Error("The operation was aborted"), { name: "TimeoutError" }));
+        },
+      }),
+      { status: 200 },
+    );
+    await expect(openrouter.extractFacts(transcript, intake, stub(slow))).rejects.toThrow(/timed out/);
+  });
+});
+
+describe("the default models", () => {
+  it("are named free models, with no router, from more than one provider", () => {
+    delete process.env.OPENROUTER_MODELS;
+    const models = env.openrouterModels;
+    expect(models.length).toBeGreaterThanOrEqual(3);
+    expect(models.every(isFreeModel)).toBe(true);
+    expect(models).not.toContain("openrouter/free"); // it once routed to a safety classifier
+    expect(new Set(models.map((m) => m.split("/")[0])).size).toBe(models.length); // one per vendor
+  });
+
+  it("still allow the router when someone asks for it", () => {
+    expect(allowedModels(["openrouter/free"])).toEqual(["openrouter/free"]);
+  });
+});
+
+describe("detailFromBody", () => {
+  it("pulls the upstream provider and its complaint out of OpenRouter's wrapper", () => {
+    expect(
+      detailFromBody({ error: { message: "Provider returned error", metadata: { raw: '{"detail":"Function x: Not found"}', provider_name: "Nvidia" } } }),
+    ).toBe("Nvidia: Function x: Not found");
+    expect(detailFromBody({ error: { message: "Provider returned error", metadata: { raw: "rate-limited upstream", provider_name: "Google AI Studio" } } })).toBe(
+      "Google AI Studio: rate-limited upstream",
+    );
+  });
+
+  it("uses the provider's own message when there is one, and says nothing for a bare wrapper", () => {
+    expect(detailFromBody({ error: { message: "Reasoning is mandatory for this endpoint" } })).toBe("Reasoning is mandatory for this endpoint");
+    expect(detailFromBody({ error: { message: "Provider returned error" } })).toBe("");
+  });
+
+  it("copes with anything that is not an error body", () => {
+    for (const odd of [null, undefined, "text", 3, [], {}, { error: null }, { error: "string" }]) expect(detailFromBody(odd)).toBe("");
+  });
+
+  it("drops a link, which would only be cut off at the length limit", () => {
+    expect(
+      detailFromBody({ error: { message: "Provider returned error", metadata: { raw: "busy. Please retry, or add your own key: https://openrouter.ai/settings/integrations", provider_name: "Phala" } } }),
+    ).toBe("Phala: busy. Please retry, or add your own key:");
+  });
+
+  it("keeps it to one bounded line", () => {
+    const detail = detailFromBody({ error: { message: `line one\nline two\t${"x".repeat(500)}` } });
+    expect(detail).not.toMatch(/[\n\t]/);
+    expect(detail.length).toBeLessThanOrEqual(180);
   });
 });

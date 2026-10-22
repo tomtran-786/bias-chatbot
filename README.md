@@ -114,11 +114,23 @@ OpenRouter model. It is off unless `OPENROUTER_API_KEY` is set.
   has bought fewer than 10 credits (1,000 a day above that). An appraisal is about nine
   model calls, so the low cap is roughly five appraisals a day, and only once Gemini has
   run out.
-- **The free list changes.** `OPENROUTER_MODELS` is tried in order, and one that is rate
-  limited, busy, or removed is skipped for the next (a model that just refused is tried
-  last for a minute). The default is two free models that, per OpenRouter's public model
-  list, accept JSON output, then the free router. Check
-  <https://openrouter.ai/models?max_price=0> if they stop answering.
+- **Free models are flaky, so there are four.** `OPENROUTER_MODELS` is tried in order, and
+  one that is rate limited, busy, or removed is skipped for the next (a model that just
+  refused is tried last for a minute). On the first live run roughly half of all calls were
+  refused by the upstream provider: a shared free pool that was busy (429), a 502, one
+  provider answering 404 for the account. The default is four named models from four
+  providers that returned valid JSON; a refused attempt is not counted against the daily
+  cap, only an answer is. `openrouter/free` is allowed but not default: it routes to
+  whatever is free at that moment, and once chose a safety classifier that answered
+  "User Safety: safe". Check <https://openrouter.ai/models?max_price=0> if they stop answering.
+- **Reasoning is switched off.** Several free models reason before they answer, spending
+  the whole token budget before writing a word (a minute of nothing, then an empty reply).
+  Every request sends `reasoning: {effort: "none"}`; a model that cannot disable it answers
+  400 with the reason.
+- **Quality is below Gemini's.** On the same real search results, one free model found two
+  listings and another found none where Gemini found three. The verbatim price check means
+  a weak reading shows up as fewer verified listings (a thin or empty market), never as a
+  wrong price.
 - **Text only.** No photo is sent, so photos still go to Google alone, and the model is
   told it cannot see them. The conversation text goes to OpenRouter and the provider that
   serves the model. OpenRouter's own prompt logging and use of inputs are off unless you
@@ -281,7 +293,7 @@ being precise about rather than overclaiming.
 | `TAVILY_API_KEY` | — | Required to look up the market; read only when an appraisal runs |
 | `GEMINI_FALLBACK_MODELS` | `gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite` | Gemini models tried, in order, after `GEMINI_MODEL`; empty means none |
 | `OPENROUTER_API_KEY` | — | Optional free backup; blank means none. Only `:free` models are ever called |
-| `OPENROUTER_MODELS` | `nvidia/nemotron-3-super-120b-a12b:free,google/gemma-4-31b-it:free,openrouter/free` | Free models tried in order; anything not free is dropped |
+| `OPENROUTER_MODELS` | four named free models, from four providers (see `lib/env.ts`) | Free models tried in order; anything not free is dropped |
 | `DEEPSEEK_API_KEY` | — | Optional backup model; blank means none. Prepaid, not free |
 | `DEEPSEEK_MODEL` | `deepseek-flash` | Which DeepSeek model the backup uses |
 | `DAILY_SEARCH_BUDGET` | `40` | Tavily calls per UTC day, counted in memory |
