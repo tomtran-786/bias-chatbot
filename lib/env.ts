@@ -31,13 +31,14 @@ export const env = {
   },
   /** Which protocol document to load. Bump this, don't edit a live protocol. */
   get protocolFile() {
-    return process.env.PROTOCOL_FILE ?? "protocol_v1.md";
+    return process.env.PROTOCOL_FILE ?? "protocol_v2.md";
   },
   /**
-   * Hard cap on turns per decision. Guards the daily free-tier quota against
-   * one runaway conversation draining the day's budget.
+   * Hard cap on turns per appraisal. Guards the quota against one runaway
+   * conversation draining the day's budget. Four questions and a verdict is the
+   * intended length, so this leaves plenty of room for follow-ups.
    */
   get maxTurns() {
-    return Number(process.env.MAX_TURNS ?? 40);
+    return Number(process.env.MAX_TURNS ?? 20);
   },
 } as const;

@@ -1,13 +1,13 @@
 /**
- * The five phases of a decision, the per-phase instruction appended to the
+ * The six phases of an appraisal, the per-phase instruction appended to the
  * system prompt, the parser for the `[[STAGE:x]]` markers the model emits, and
  * the reachability rules the API enforces.
  *
- * Two phases are driven by the model (it knows when it has probed enough, and
- * when the recommendation is delivered) and the rest by the app. Hard-coding
- * every transition on the server would mean maintaining a second, competing copy
- * of the protocol; leaving every transition to the model means watching it grade
- * before it has asked anything. The split puts each decision where the
+ * Two phases are driven by the model (it knows when it has asked enough, and
+ * when the verdict is delivered) and the rest by the app. Hard-coding every
+ * transition on the server would mean maintaining a second, competing copy of
+ * the protocol; leaving every transition to the model means watching it quote a
+ * price before it has asked anything. The split puts each decision where the
  * information is.
  *
  * The marker token is still spelled `[[STAGE:` rather than `[[PHASE:`. That is
@@ -15,46 +15,53 @@
  * bug would leak control text into what the person reads, and they are worth
  * more intact than renamed.
  */
-import { DIMENSION_COUNT } from "./rubric";
 
 export const STAGES = [
-  "frame",
+  "intake",
   "probe",
   "commit",
-  "grade",
-  "recommend",
+  "appraise",
+  "verdict",
   "complete",
 ] as const;
 
 export type Stage = (typeof STAGES)[number];
 
-export const FIRST_STAGE: Stage = "frame";
+export const FIRST_STAGE: Stage = "intake";
 
 export function isStage(value: string): value is Stage {
   return (STAGES as readonly string[]).includes(value);
 }
 
+/**
+ * The facts the assistant has to cover before the price is asked for: which
+ * model, what was paid and when, how long it has been used, and the condition
+ * as shown in the photos. One question each, and the opener already asks the
+ * first, so this is also the number of assistant turns needed.
+ */
+export const FACT_COUNT = 4;
+
 /** Labels for the progress rail. */
 export const STAGE_LABELS: Record<Stage, string> = {
-  frame: "Your decision",
+  intake: "Your item",
   probe: "Questions",
-  commit: "Your call",
-  grade: "The grade",
-  recommend: "Recommendation",
+  commit: "Your price",
+  appraise: "The market",
+  verdict: "Verdict",
   complete: "Finished",
 };
 
-const STAGE_INSTRUCTIONS: Record<Stage, string> = {
-  frame:
-    "You are in the FRAME phase. Restate their decision in one sentence and say what is about to happen. Do not start scoring.",
+export const STAGE_INSTRUCTIONS: Record<Stage, string> = {
+  intake:
+    "You are in the INTAKE phase. They have told you what they are selling and attached photos. In one or two sentences say what you believe the item is from the photos and their description, and flag it if the two disagree. Then ask your first question in the same turn. Do not mention any price, value or market figure.",
   probe:
-    "You are in the PROBE phase. Ask one question per turn, working through the probe questions and following up where an answer was thin. Do not grade, do not advise, and do not name the bias. When you could quote them on all five dimensions, say so and end that turn with the marker for the commit phase.",
+    "You are in the PROBE phase. Ask one question per turn — one thing, never several joined together — until you have all four facts: the exact model or variant, what they paid and roughly when, how long they have used it, and its current condition checked against the photos. Follow up where an answer was thin or a photo contradicts it, and you may ask for another photo. Do not state any price, estimate or market figure, and do not name any bias. When all four are covered, say you have what you need and end that turn with the marker for the commit phase.",
   commit:
-    "They are recording their own provisional pick. Acknowledge it in one line and do not comment on it or try to influence it.",
-  grade:
-    "You are in the GRADE phase. Emit the five dimension scores and nothing else — no preamble, no recommendation, and no overall or average score.",
-  recommend:
-    "You are in the RECOMMEND phase. Recommend exactly one of the options they listed, under the four required headings, leaning on their lowest-scoring dimensions and applying the anchor study's corrected framing to their situation. End the turn with the completion marker.",
+    "They are locking in the price they would list it at, before seeing any market data. Acknowledge it in one line. Do not comment on the number and do not mention any other price.",
+  appraise:
+    "The app is searching the market and computing the figures. You do not speak in this phase.",
+  verdict:
+    "You are in the VERDICT phase. Use only the figures in the appraisal above — never compute, estimate or restate a different price. Write exactly four sections under these headings: Suggested price, Why this price, Where to sell, What would change this. Name the bias only if the appraisal says overpriced is true. End the turn with the completion marker.",
   complete:
     "The conversation is finished. If they write again, answer briefly within what has already been said and do not open a new line of questioning.",
 };
@@ -67,58 +74,74 @@ export function stageInstruction(stage: Stage): string {
 export type PhaseContext = {
   /** Assistant turns so far. One question per turn, so this counts questions. */
   assistantTurns: number;
-  hasCommitment: boolean;
-  hasGrade: boolean;
+  /** Distinct photos the conversation has shown the assistant. */
+  photoCount: number;
+  hasAskingPrice: boolean;
+  hasAppraisal: boolean;
 };
 
-const plural = (n: number) => `${n} question${n === 1 ? "" : "s"}`;
+const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
+
+/** The two checks that both the commit and appraise gates share. */
+function readyToPrice(context: PhaseContext): string | null {
+  if (context.assistantTurns < FACT_COUNT) {
+    return `The assistant must ask at least ${FACT_COUNT} questions — one per fact it needs — before a price can be recorded. It has asked ${context.assistantTurns}.`;
+  }
+  if (context.photoCount < 1) {
+    return "There is no photo yet. The assistant needs at least one to check the condition against.";
+  }
+  return null;
+}
 
 /**
  * Whether `stage` is legally reachable given what the client has sent.
  *
- * This guards against the model drifting out of order — grading after two
- * questions, recommending before it has graded — which is the failure this
- * design exists to prevent. It is not a security boundary: there is no
- * server-side state, so the person holding the conversation could construct any
- * payload they liked. They are the person being helped, so that is fine; it is
- * worth being clear that the guarantee is against drift, not against tampering.
+ * This guards against the model drifting out of order — asking for a price after
+ * one question, delivering a verdict before there is a market — which is the
+ * failure this design exists to prevent. It is not a security boundary: there is
+ * no server-side state, so the person holding the conversation could construct
+ * any payload they liked. They are the person being helped, so that is fine; it
+ * is worth being clear that the guarantee is against drift, not against
+ * tampering.
  */
 export function canEnter(
   stage: Stage,
   context: PhaseContext,
 ): { ok: true } | { ok: false; reason: string } {
   switch (stage) {
-    case "frame":
+    case "intake":
     case "probe":
       return { ok: true };
 
-    case "commit":
-      return context.assistantTurns >= DIMENSION_COUNT
-        ? { ok: true }
-        : {
-            ok: false,
-            reason: `The assistant must ask at least ${DIMENSION_COUNT} questions — one per scored dimension — before a pick can be recorded. It has asked ${context.assistantTurns}.`,
-          };
+    case "commit": {
+      const problem = readyToPrice(context);
+      return problem ? { ok: false, reason: problem } : { ok: true };
+    }
 
-    case "grade":
-      if (context.assistantTurns < DIMENSION_COUNT) {
+    case "appraise": {
+      const problem = readyToPrice(context);
+      if (problem) {
         return {
           ok: false,
-          reason: `Cannot grade after ${plural(context.assistantTurns)}; every one of the ${DIMENSION_COUNT} dimensions has to have been asked about.`,
+          reason: `Cannot look up the market yet. ${problem}`,
         };
       }
-      return context.hasCommitment
+      return context.hasAskingPrice
         ? { ok: true }
         : {
             ok: false,
             reason:
-              "Cannot grade before they have recorded their own pick. The uncoached baseline has to be locked in first.",
+              "Cannot look up the market before they have locked in their own price. The uncoached baseline has to be recorded first.",
           };
+    }
 
-    case "recommend":
-      return context.hasGrade
+    case "verdict":
+      return context.hasAppraisal
         ? { ok: true }
-        : { ok: false, reason: "Cannot recommend before the grade exists." };
+        : {
+            ok: false,
+            reason: `Cannot give a verdict before the market has been looked up (${plural(context.assistantTurns, "question")} asked so far).`,
+          };
 
     case "complete":
       return { ok: true };

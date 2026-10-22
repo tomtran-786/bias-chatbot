@@ -1,51 +1,72 @@
 # The protocol documents
 
-`_template.md` is the instrument. Everything the assistant does — what it asks,
-what it scores, how it recommends — is in there, so changing it changes the
-intervention itself.
+`protocol_v2.md` is the instrument. Everything the assistant does — what it asks,
+what it withholds, how it argues the verdict — is in there, so changing it
+changes the intervention itself.
 
 ## Files
 
 | File | What it is |
 |---|---|
-| `_template.md` | The bias-agnostic template. Not loadable: the loader only accepts `protocol_vN.md`, so it can never be run by accident. |
-| `protocol_v1.md` | A **placeholder** instantiation on sunk cost (Arkes & Blumer 1985), so the app runs before the lottery draft. |
+| `protocol_v2.md` | The used-item pricing protocol, on loss aversion (Novemsky & Kahneman 2005). |
 
-## Instantiating it after the draft
+`protocol_v1.md` (sunk cost, a five-dimension decision grader) and `_template.md`
+were removed when the product became a resale price assistant. They are still in
+git history if the earlier design is ever wanted again.
 
-1. `cp _template.md protocol_v2.md`
-2. Fill in every `TODO(team)`:
-   - the target bias and its operational definition,
-   - the anchor study and the corrected framing it works from — written as a
-     framing that can be applied to someone's situation, not as a citation,
-   - the three bias-specific rubric dimensions in the ` ```rubric ` block, with
-     their low and high anchors. **Leave `options` and `evidence` alone** —
-     those two are fixed and bias-agnostic by design.
-   - the five probe questions, at least one covering each dimension.
-3. Set `PROTOCOL_FILE=protocol_v2.md` in `.env.local`.
-4. Run `npm test` — the rubric block is parsed and validated at load, so a
-   malformed or under-filled block fails loudly rather than producing a
-   half-graded scorecard.
+## What is in the file
 
-Leave `protocol_v1.md` in place as a worked example.
+Only the span between `<!-- GEM CORE START -->` and `<!-- GEM CORE END -->` is
+the instrument. It holds:
 
-## The rubric block
+- the role: a pricing assistant for someone about to sell a used item,
+- the bias and its definition in observable terms, and the anchor study with the
+  corrected framing ("price it as a buyer who does not own it"),
+- the four things to find out — model, what they paid and when, how long they
+  have used it, condition against the photos,
+- the phases, written as prose a Gem can follow,
+- the guardrails, chiefly **no price of any kind before they have named theirs**.
 
-The fenced ` ```rubric ` block is the single source of truth for the scorecard.
-The app parses it to build the response schema and to render the results; the
-Gem reads the same block as instructions. There must be exactly five entries
-with unique ids, and every field must be non-empty and free of `TODO`.
+Everything after it is the *harness notes*: the four things the app does that a
+Gem cannot. They are scaffolding for this repo and are not sent to the model.
 
 ## Versioning
 
-**Never edit a protocol that is in use.** Copy it to the next version number and
-repoint `PROTOCOL_FILE`. Two people running different wordings of the same
-instrument and calling the result the same thing is how a comparison quietly
-stops meaning anything.
+**Never edit a protocol that is in use.** Copy it to `protocol_v3.md`, change the
+copy, and set `PROTOCOL_FILE=protocol_v3.md`. Two people running different
+wordings of the same instrument and calling the result the same thing is how a
+comparison quietly stops meaning anything.
+
+The loader accepts only files named `protocol_vN.md` so the version is always
+visible in the logs and in the system instruction.
+
+## Things the code relies on
+
+The app does not parse the protocol beyond cutting out the core, but several
+things in the code assume what it says:
+
+- **The four section headings of the verdict** — `Suggested price`, `Why this
+  price`, `Where to sell`, `What would change this`. `lib/stages.ts` tells the
+  model to use them; `components/Prose.tsx` renders `##` headings.
+- **The 15% line.** The protocol says to name the bias when the locked price is
+  15% or more above the market median; `OVERPRICED_AT` in `lib/pricing.ts` is
+  what makes the app say `overpriced: true`. Change them together.
+- **The four facts.** `FACT_COUNT` in `lib/stages.ts` is 4 because the protocol
+  asks for four things, one per turn, the first already asked in the opening
+  turn. Change the protocol's list and you change that number and the server's
+  gate with it.
+- **The two markers**, `[[STAGE:commit]]` and `[[STAGE:complete]]`. They are
+  appended by the app (`MARKER_RULE` in `lib/gemini.ts`) and are not part of the
+  Gem core, because a Gem has nowhere to hide control text.
 
 ## The Gem
 
-Only the span between `<!-- GEM CORE START -->` and `<!-- GEM CORE END -->` goes
-into the Gem builder. Everything outside it is scaffolding for this repo. The app
-runs that same span as its system instruction, plus a short phase addendum, which
-is what makes the two comparable.
+Only the core goes into the Gem builder. The app sends that same span as its
+system instruction, plus the item, a short phase addendum and, on the verdict
+turn, the computed market — which is what makes the two comparable rather than
+merely similar.
+
+A Gem has no way to enforce the harness notes, so running the same item through
+both is a useful test: wherever the Gem names a price early, cites a link it
+cannot have verified, or states a median of its own, is direct evidence for what
+the app's structure buys.

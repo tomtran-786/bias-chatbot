@@ -3,22 +3,21 @@
  *
  * Read once at module load: the document is fixed for the lifetime of a
  * deployment, so a malformed one should fail the process at startup rather than
- * surface as a broken conversation half way through someone's decision.
+ * surface as a broken conversation half way through someone's sale.
  */
 import "server-only";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { env } from "./env";
-import { parseRubric } from "./rubric";
 
 const protocolFile = env.protocolFile;
 
-/** e.g. "protocol_v1.md" -> "v1" */
+/** e.g. "protocol_v2.md" -> "v2" */
 function versionFromFilename(filename: string): string {
   const match = filename.match(/_(v[\d.]+)\.md$/);
   if (!match) {
     throw new Error(
-      `Protocol file "${filename}" must be named like "protocol_v1.md" so its version is visible. Note that "_template.md" is deliberately unloadable.`,
+      `Protocol file "${filename}" must be named like "protocol_v2.md" so its version is visible.`,
     );
   }
   return match[1];
@@ -52,12 +51,3 @@ export const GEM_CORE = (() => {
   }
   return PROTOCOL_TEXT.slice(start + CORE_START.length, end).trim();
 })();
-
-/**
- * The scorecard dimensions, parsed out of the protocol's ```rubric block.
- *
- * Evaluated at module load so an under-filled or malformed rubric takes the
- * process down at startup, rather than producing an authoritative-looking
- * scorecard that grades nothing half way through someone's decision.
- */
-export const RUBRIC = parseRubric(GEM_CORE);

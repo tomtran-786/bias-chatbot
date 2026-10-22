@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Decision grader",
+  title: "Resale price assistant",
   description:
-    "Asks about a decision you have not made yet, grades your reasoning, and recommends one of your options.",
+    "Photos and a few questions about something you are about to sell, then a suggested listing price from used listings of the same model, and where to sell it.",
   robots: { index: false, follow: false },
 };
 
