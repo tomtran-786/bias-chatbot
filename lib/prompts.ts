@@ -156,12 +156,28 @@ const FACTS_INSTRUCTION_BASE = [
 ].join(" ");
 
 export function parseJson(text: string | undefined, what: string): unknown {
-  if (!text) throw new MalformedAppraisalError(`The model returned an empty ${what}.`);
+  if (!text?.trim()) throw new MalformedAppraisalError(`The model returned an empty ${what}.`);
   try {
-    return JSON.parse(text);
+    return JSON.parse(unwrapJson(text));
   } catch {
     throw new MalformedAppraisalError(`The ${what} was not valid JSON.`);
   }
+}
+
+/**
+ * The JSON object in an answer that may have wrapped it. Free models often put the
+ * object in a ```json fence or add a sentence around it despite being told not to;
+ * a strict parse would throw away a perfectly good answer for that. Plain JSON is
+ * returned untouched, so a model that obeys is not affected.
+ */
+export function unwrapJson(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{")) return trimmed;
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fenced) return fenced[1];
+  const from = trimmed.indexOf("{");
+  const to = trimmed.lastIndexOf("}");
+  return from !== -1 && to > from ? trimmed.slice(from, to + 1) : trimmed;
 }
 
 export const EXTRACT_INSTRUCTION = [

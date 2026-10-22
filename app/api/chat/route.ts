@@ -72,7 +72,7 @@ type Event =
   | { t: "text"; v: string }
   | { t: "stage"; v: Stage }
   /** Told to the person when the backup model is the one answering. */
-  | { t: "notice"; v: "backup_model" }
+  | { t: "notice"; v: "backup_model"; provider: string }
   | { t: "error"; code: "rate_limited" | "model_overloaded" | "server_error" };
 
 export async function POST(request: Request) {
@@ -174,7 +174,8 @@ export async function POST(request: Request) {
       });
 
       try {
-        const onFallback = () => send({ t: "notice", v: "backup_model" });
+        const onFallback = (provider: string) =>
+          send({ t: "notice", v: "backup_model", provider });
         for await (const chunk of streamReply(history, photos, phase, context, onFallback)) {
           filter.push(chunk);
         }

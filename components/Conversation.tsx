@@ -123,8 +123,8 @@ export function Conversation() {
   const [appraising, setAppraising] = useState(false);
   const [error, setError] = useState<ChatError | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
-  // Set when the backup model has answered, and kept: every later reply may be it.
-  const [backupModel, setBackupModel] = useState(false);
+  // Which backup model has answered, kept: every later reply may be it too.
+  const [backupModel, setBackupModel] = useState<string | null>(null);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const opened = useRef(new Set<Stage>());
@@ -239,7 +239,7 @@ export function Conversation() {
           const event = JSON.parse(line) as
             | { t: "text"; v: string }
             | { t: "stage"; v: Stage }
-            | { t: "notice"; v: "backup_model" }
+            | { t: "notice"; v: "backup_model"; provider: string }
             | { t: "error"; code: "rate_limited" | "model_overloaded" | "server_error" };
 
           if (event.t === "text") {
@@ -253,7 +253,7 @@ export function Conversation() {
           } else if (event.t === "stage") {
             stages.push(event.v);
           } else if (event.t === "notice") {
-            setBackupModel(true);
+            setBackupModel(event.provider);
           } else {
             failed = true;
             setError(event.code);
@@ -343,7 +343,8 @@ export function Conversation() {
 
       setAskingPrice(asking);
       setAppraisal(body as AppraiseResponse);
-      if ((body as AppraiseResponse).backup.length > 0) setBackupModel(true);
+      const backedUp = (body as AppraiseResponse).backup;
+      if (backedUp.length > 0) setBackupModel(backedUp[0].provider);
       setAppraisedAt(messages.length);
       setPhase("appraise");
     } catch {
@@ -485,9 +486,9 @@ export function Conversation() {
 
           {backupModel ? (
             <Notice>
-              Gemini’s quota is used up, so this is being answered by DeepSeek, the
-              backup model. It reads text only and cannot see your photos — describe
-              any wear or damage in words.
+              Gemini’s quota is used up, so this is being answered by {backupModel},
+              a backup model. It reads text only and cannot see your photos —
+              describe any wear or damage in words.
             </Notice>
           ) : null}
           {error ? <Notice>{ERROR_COPY[error]}</Notice> : null}

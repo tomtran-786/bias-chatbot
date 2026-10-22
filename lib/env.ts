@@ -33,6 +33,17 @@ const DEFAULT_FALLBACK_MODELS = [
   "gemini-3.1-flash-lite",
 ];
 
+/**
+ * Free OpenRouter models that, per its public model list, accept the JSON response
+ * format. The list changes; override with OPENROUTER_MODELS. The last entry is
+ * OpenRouter's own router over its free models.
+ */
+const DEFAULT_OPENROUTER_MODELS = [
+  "nvidia/nemotron-3-super-120b-a12b:free",
+  "google/gemma-4-31b-it:free",
+  "openrouter/free",
+];
+
 export const env = {
   get geminiApiKey() {
     return required("GEMINI_API_KEY");
@@ -98,6 +109,22 @@ export const env = {
   },
   get deepseekModel() {
     return process.env.DEEPSEEK_MODEL ?? "deepseek-flash";
+  },
+  /**
+   * OpenRouter, the free backup tried before DeepSeek. Optional: no key means it is
+   * skipped. Only models that are free are ever called (lib/openrouter.ts enforces
+   * it), whatever this list says.
+   */
+  get openrouterApiKey(): string | undefined {
+    const key = process.env.OPENROUTER_API_KEY?.trim();
+    return key ? key : undefined;
+  },
+  /** Free models, tried in order. Unset is the default list; set-but-empty is none. */
+  get openrouterModels(): string[] {
+    const raw = process.env.OPENROUTER_MODELS;
+    const list = raw === undefined ? DEFAULT_OPENROUTER_MODELS : raw.split(",");
+    const seen = new Set<string>();
+    return list.map((name) => name.trim()).filter((name) => name !== "" && !seen.has(name) && seen.add(name));
   },
   /**
    * In-memory daily ceilings on outbound calls (see lib/budget.ts). A tripwire

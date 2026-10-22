@@ -491,10 +491,102 @@ describe("the backup model", () => {
     const { status, json } = await post(body);
 
     expect(status).toBe(200);
-    expect(json.backup).toEqual(["facts", "reading"]);
+    expect(json.backup).toEqual([
+      { step: "facts", provider: "DeepSeek" },
+      { step: "reading", provider: "DeepSeek" },
+    ]);
     expect(json.market).toMatchObject({ tier: "full", count: 5, median: 300 });
     expect(json.item.model).toBe("iPhone 13");
     expect(calls).toHaveLength(2);
+  });
+
+  describe("OpenRouter, the free backup tried before DeepSeek", () => {
+    /** Answers by host, so a test can tell which backup was asked. */
+    function backups(opts: { openrouter?: "ok" | "limited" | "paid-model-check"; facts?: unknown; reading?: unknown } = {}) {
+      const asked: Array<{ host: string; model: string; body: string }> = [];
+      const fetchStub = vi.fn(async (url: string, init: RequestInit) => {
+        const sent = JSON.parse(init.body as string);
+        const host = new URL(url).hostname;
+        asked.push({ host, model: sent.model, body: init.body as string });
+        if (host === "openrouter.ai" && opts.openrouter === "limited") return new Response("{}", { status: 429 });
+        const reading = (sent.messages[0].content as string).includes('"listings"');
+        const content = reading
+          ? (opts.reading ?? { listings, newPrice: 700, position: "typical", positionEvidence: "light wear" })
+          : (opts.facts ?? FACTS);
+        return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }] }), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchStub);
+      return { asked, fetchStub };
+    }
+
+    beforeEach(() => {
+      process.env.OPENROUTER_API_KEY = "sk-or-test";
+      process.env.OPENROUTER_MODELS = "free-a/m:free,free-b/m:free";
+    });
+    afterEach(() => {
+      delete process.env.OPENROUTER_API_KEY;
+      delete process.env.OPENROUTER_MODELS;
+    });
+
+    it("answers in DeepSeek's place, so nothing paid is touched while a free option works", async () => {
+      generateContent.mockRejectedValue(quota());
+      const { asked } = backups();
+
+      const { status, json } = await post(body);
+
+      expect(status).toBe(200);
+      expect(json.backup).toEqual([
+        { step: "facts", provider: "OpenRouter" },
+        { step: "reading", provider: "OpenRouter" },
+      ]);
+      expect(asked.every((a) => a.host === "openrouter.ai")).toBe(true);
+    });
+
+    it("only ever asks for a free model, and sends no photo and no price they must not see", async () => {
+      generateContent.mockRejectedValue(quota());
+      const { asked } = backups();
+      await post(body);
+
+      for (const call of asked) {
+        expect(call.model.endsWith(":free") || call.model === "openrouter/free").toBe(true);
+        expect(call.body).not.toContain(photo.data);
+        expect(call.body).not.toContain(String(LOCKED));
+      }
+      expect(asked[1].body).not.toContain(String(PAID)); // the reading
+    });
+
+    it("moves on to DeepSeek when the free models are all rate limited", async () => {
+      generateContent.mockRejectedValue(quota());
+      const { asked } = backups({ openrouter: "limited" });
+
+      const { status, json } = await post(body);
+
+      expect(status).toBe(200);
+      expect(json.backup.map((b: { provider: string }) => b.provider)).toEqual(["DeepSeek", "DeepSeek"]);
+      // Both free models were tried (once each) before any money was spent.
+      const hosts = asked.map((a) => a.host);
+      expect(hosts.indexOf("api.deepseek.com")).toBe(2);
+      expect(hosts.slice(0, 2)).toEqual(["openrouter.ai", "openrouter.ai"]);
+    });
+
+    it("names every backup that failed when none could answer", async () => {
+      generateContent.mockRejectedValue(quota());
+      vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 429 })));
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const { status, json } = await post(body);
+
+      expect(status).toBe(429);
+      expect(json.reason).toMatch(/The backup models failed too: OpenRouter: OpenRouter is rate limiting this key; DeepSeek: DeepSeek is rate limiting this key/);
+    });
+
+    it("is not used when DeepSeek alone is set up and OpenRouter has no key", async () => {
+      delete process.env.OPENROUTER_API_KEY;
+      generateContent.mockRejectedValue(quota());
+      const { asked } = backups();
+      await post(body);
+      expect(asked.every((a) => a.host === "api.deepseek.com")).toBe(true);
+    });
   });
 
   it("tries every Gemini model before it uses DeepSeek", async () => {
@@ -542,7 +634,7 @@ describe("the backup model", () => {
 
     const { status, json } = await post(body);
     expect(status).toBe(200);
-    expect(json.backup).toEqual(["reading"]);
+    expect(json.backup).toEqual([{ step: "reading", provider: "DeepSeek" }]);
   });
 
   it("takes over for an overloaded Gemini as well", async () => {
@@ -550,7 +642,10 @@ describe("the backup model", () => {
     deepseekAnswers();
     const { status, json } = await post(body);
     expect(status).toBe(200);
-    expect(json.backup).toEqual(["facts", "reading"]);
+    expect(json.backup).toEqual([
+      { step: "facts", provider: "DeepSeek" },
+      { step: "reading", provider: "DeepSeek" },
+    ]);
   });
 
   it("reports no backup when Gemini answered", async () => {

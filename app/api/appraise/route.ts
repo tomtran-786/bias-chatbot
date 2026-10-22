@@ -110,11 +110,11 @@ export async function POST(request: Request) {
   }
 
   // Which steps the backup model took over, so the card can say so.
-  const backup: Array<"facts" | "reading"> = [];
+  const backup: AppraiseResponse["backup"] = [];
 
   try {
-    const item = await extractFacts(transcript, checked.photos, intake, () => {
-      backup.push("facts");
+    const item = await extractFacts(transcript, checked.photos, intake, (provider) => {
+      backup.push({ step: "facts", provider });
     });
 
     // Without a model name there is nothing to search for, and a search for
@@ -124,8 +124,8 @@ export async function POST(request: Request) {
 
     const search = await searchListings(searchQueries(forSearch(item)));
     const sources = toSources(search.results);
-    const reading = await readListings(item, sources, () => {
-      backup.push("reading");
+    const reading = await readListings(item, sources, (provider) => {
+      backup.push({ step: "reading", provider });
     });
 
     const raw: AppraisalInput = {

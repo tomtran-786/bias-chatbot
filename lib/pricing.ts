@@ -387,10 +387,10 @@ export type AppraiseResponse = Appraisal & {
   /** The searches that were run, so the person can see what was looked up. */
   queries: string[];
   /**
-   * Which steps the backup model answered because Gemini could not. Empty
-   * normally. The card says so, since the backup cannot see photos.
+   * Which steps a backup model answered because Gemini could not, and which one.
+   * Empty normally. The card says so, since a backup cannot see photos.
    */
-  backup: Array<"facts" | "reading">;
+  backup: Array<{ step: "facts" | "reading"; provider: string }>;
 };
 
 const dollars = new Intl.NumberFormat("en-US", {

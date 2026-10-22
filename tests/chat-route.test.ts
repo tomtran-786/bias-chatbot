@@ -420,7 +420,7 @@ describe("the backup model", () => {
 
     const { events } = await postChat({ ...base, transcript: conversation(FACT_COUNT - 1) });
 
-    expect(events[0]).toEqual({ t: "notice", v: "backup_model" });
+    expect(events[0]).toEqual({ t: "notice", v: "backup_model", provider: "DeepSeek" });
     expect(texts(events)).toBe("Got it. That is all I need.");
     expect(events).toContainEqual({ t: "stage", v: "commit" });
     expect(events.some((e) => e.t === "error")).toBe(false);
@@ -478,7 +478,28 @@ describe("the backup model", () => {
     expect(events).toContainEqual({ t: "error", code: "model_overloaded" });
   });
 
-  it("classifies by Gemini's failure when the backup fails too, and still tells the browser the backup was tried", async () => {
+  it("answers with OpenRouter's free model first when it is set up, and names it", async () => {
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    process.env.OPENROUTER_MODELS = "free-a/m:free";
+    process.env.DEEPSEEK_API_KEY = "sk-test";
+    geminiOutOfQuota();
+    const fetchStub = vi.fn(async (url: string) => {
+      void url;
+      return sseBody("From the free model.");
+    });
+    vi.stubGlobal("fetch", fetchStub);
+
+    const { events } = await postChat(base);
+
+    expect(events[0]).toEqual({ t: "notice", v: "backup_model", provider: "OpenRouter" });
+    expect(texts(events)).toBe("From the free model.");
+    // DeepSeek, which costs money, was never asked.
+    expect(fetchStub.mock.calls.map(([url]) => new URL(url).hostname)).toEqual(["openrouter.ai"]);
+    delete process.env.OPENROUTER_API_KEY;
+    delete process.env.OPENROUTER_MODELS;
+  });
+
+  it("does not claim a backup answered when none did: only the error reaches the browser", async () => {
     process.env.DEEPSEEK_API_KEY = "sk-test";
     geminiOutOfQuota();
     vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 402 })));
@@ -487,7 +508,6 @@ describe("the backup model", () => {
     const { events } = await postChat(base);
 
     expect(events).toEqual([
-      { t: "notice", v: "backup_model" },
       { t: "error", code: "rate_limited" },
     ]);
   });

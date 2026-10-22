@@ -145,13 +145,15 @@ export function MarketCard({
         ) : null}
         {appraisal.backup.length > 0 ? (
           <p className="text-xs leading-relaxed text-ink-secondary">
-            Gemini’s quota was used up, so DeepSeek, the backup model, did part of
-            this:{" "}
-            {appraisal.backup.includes("facts")
-              ? "it worked out the item from your messages alone, since it cannot see photos"
-              : null}
-            {appraisal.backup.length === 2 ? ", and " : null}
-            {appraisal.backup.includes("reading") ? "it read the search results" : null}.
+            Gemini’s quota was used up, so a backup model did part of this:{" "}
+            {appraisal.backup
+              .map((entry) =>
+                entry.step === "facts"
+                  ? `${entry.provider} worked out the item from your messages alone, since it cannot see photos`
+                  : `${entry.provider} read the search results`,
+              )
+              .join(", and ")}
+            .
           </p>
         ) : null}
         <p className="text-xs leading-relaxed text-ink-muted">

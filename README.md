@@ -99,11 +99,41 @@ conversation changes. When one is refused, the next call tries it last for a min
 - **Quality varies.** A `flash-lite` model reads search results and extracts facts a little
   less carefully than a full flash model; the verbatim price check applies to every one.
 
+### Then a free backup: OpenRouter (optional)
+
+If every Gemini model has refused, the app can finish the request with a **free**
+OpenRouter model. It is off unless `OPENROUTER_API_KEY` is set.
+
+- **It cannot cost money, and the code enforces it.** OpenRouter bills per token for every
+  model except those whose id ends in `:free` (and its `openrouter/free` router, which only
+  picks among them). Before any request is built, `lib/openrouter.ts` drops every configured
+  model that is not free, with a warning in the server log; if none is left, OpenRouter
+  reports itself as not configured and no call is made. So a key that has credits on it
+  cannot be charged by a paid model named in `OPENROUTER_MODELS` by mistake.
+- **It is capped.** Free models allow 20 requests a minute, and 50 a day on an account that
+  has bought fewer than 10 credits (1,000 a day above that). An appraisal is about nine
+  model calls, so the low cap is roughly five appraisals a day, and only once Gemini has
+  run out.
+- **The free list changes.** `OPENROUTER_MODELS` is tried in order, and one that is rate
+  limited, busy, or removed is skipped for the next (a model that just refused is tried
+  last for a minute). The default is two free models that, per OpenRouter's public model
+  list, accept JSON output, then the free router. Check
+  <https://openrouter.ai/models?max_price=0> if they stop answering.
+- **Text only.** No photo is sent, so photos still go to Google alone, and the model is
+  told it cannot see them. The conversation text goes to OpenRouter and the provider that
+  serves the model. OpenRouter's own prompt logging and use of inputs are off unless you
+  turn them on; its docs do not say what each free provider does with prompts, and some
+  free models may not be served unless your privacy settings allow it.
+- **It answers JSON loosely.** Free models often wrap the object in a code fence or a
+  sentence, so the reader strips that; the same schema checks and the same verbatim price
+  check apply as for every other model.
+
 ### Last resort: DeepSeek (optional, not free)
 
-Only when **every** Gemini model in the chain has refused (quota or overload), the app
-can finish the request with DeepSeek instead. It is off unless `DEEPSEEK_API_KEY` is set;
-with no key a Gemini quota error is just reported, and the app stays free.
+Only when **every** Gemini model has refused **and** OpenRouter (if set up) has failed
+too, the app can finish the request with DeepSeek instead. It is off unless
+`DEEPSEEK_API_KEY` is set; with no key a Gemini quota error is just reported, and the app
+stays free.
 
 - **It is not free.** DeepSeek is prepaid: model costs come off a topped-up balance (or
   a granted one, which its docs do not promise), and at zero the API answers 402. So it
@@ -119,7 +149,7 @@ with no key a Gemini quota error is just reported, and the app stays free.
   (`lib/prompts.ts`); the backup differs only in transport. Its JSON mode cannot enforce
   a schema, so the schema is in the prompt and the same zod checks and the same verbatim
   price check apply to its answers.
-- **What triggers it.** Only when the whole Gemini chain has refused for quota or overload, and for a reply only if
+- **What triggers a backup.** Only when the whole Gemini chain has refused for quota or overload, and for a reply only if
   Gemini failed before saying anything: half of one reply from each model would be worse
   than an error. Timeouts and malformed answers do not trigger it.
 - **It says so.** The browser is told when the backup answers and shows a notice; the
@@ -250,6 +280,8 @@ being precise about rather than overclaiming.
 | `MAX_TURNS` | `20` | Per-conversation cap, guards the quota |
 | `TAVILY_API_KEY` | — | Required to look up the market; read only when an appraisal runs |
 | `GEMINI_FALLBACK_MODELS` | `gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite` | Gemini models tried, in order, after `GEMINI_MODEL`; empty means none |
+| `OPENROUTER_API_KEY` | — | Optional free backup; blank means none. Only `:free` models are ever called |
+| `OPENROUTER_MODELS` | `nvidia/nemotron-3-super-120b-a12b:free,google/gemma-4-31b-it:free,openrouter/free` | Free models tried in order; anything not free is dropped |
 | `DEEPSEEK_API_KEY` | — | Optional backup model; blank means none. Prepaid, not free |
 | `DEEPSEEK_MODEL` | `deepseek-flash` | Which DeepSeek model the backup uses |
 | `DAILY_SEARCH_BUDGET` | `40` | Tavily calls per UTC day, counted in memory |
