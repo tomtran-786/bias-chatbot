@@ -28,9 +28,11 @@ import { z } from "zod";
 import { BudgetExhaustedError, spend } from "@/lib/budget";
 import {
   MalformedAppraisalError,
+  ModelNotFoundError,
   ModelOverloadedError,
   ModelTimeoutError,
   RateLimitError,
+  triedNote,
 } from "@/lib/gemini";
 import { backupNote, extractFacts, primaryOf, readListings } from "@/lib/model";
 import {
@@ -155,11 +157,22 @@ export async function POST(request: Request) {
       return refuse(
         "rate_limited",
         429,
-        `Gemini is rate limiting this key (its free quota may be used up).${note}`,
+        `Gemini is rate limiting this key (its free quota may be used up).${triedNote(error)}${note}`,
       );
     }
     if (error instanceof ModelOverloadedError) {
-      return refuse("appraisal_failed", 503, `Gemini is overloaded right now. Try again in a moment.${note}`);
+      return refuse(
+        "appraisal_failed",
+        503,
+        `Gemini is overloaded right now. Try again in a moment.${triedNote(error)}${note}`,
+      );
+    }
+    if (error instanceof ModelNotFoundError) {
+      return refuse(
+        "appraisal_failed",
+        503,
+        `None of the configured Gemini models is available to this key.${triedNote(error)} Check GEMINI_MODEL and GEMINI_FALLBACK_MODELS.`,
+      );
     }
     if (error instanceof SearchRateLimitError) {
       return refuse("rate_limited", 429, "The search service is rate limiting this key.");

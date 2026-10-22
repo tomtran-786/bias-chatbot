@@ -497,6 +497,41 @@ describe("the backup model", () => {
     expect(calls).toHaveLength(2);
   });
 
+  it("tries every Gemini model before it uses DeepSeek", async () => {
+    generateContent.mockRejectedValue(quota());
+    deepseekAnswers();
+    await post(body);
+
+    const { env } = await import("@/lib/env");
+    const asked = generateContent.mock.calls.map(([request]) => request.model);
+    // The facts call went down the whole chain; only then did DeepSeek answer it.
+    expect(asked.slice(0, env.geminiModels.length)).toEqual(env.geminiModels);
+    expect(env.geminiModels.length).toBeGreaterThan(1);
+  });
+
+  it("does not touch DeepSeek when another Gemini model can answer", async () => {
+    const { env } = await import("@/lib/env");
+    generateContent.mockImplementation(async (request: Request & { model: string }) => {
+      if (request.model === env.geminiModels[0]) throw quota();
+      const properties = (request.config?.responseJsonSchema as { properties: object }).properties;
+      return { text: JSON.stringify("listings" in properties ? { listings, newPrice: 700, position: "typical", positionEvidence: "" } : FACTS) };
+    });
+    const { fetchStub } = deepseekAnswers();
+
+    const { status, json } = await post(body);
+
+    expect(status).toBe(200);
+    expect(json.backup).toEqual([]);
+    expect(fetchStub).not.toHaveBeenCalled();
+  });
+
+  it("says which Gemini models were tried when nothing could answer", async () => {
+    generateContent.mockRejectedValue(quota());
+    delete process.env.DEEPSEEK_API_KEY;
+    const { json } = await post(body);
+    expect(json.reason).toMatch(/Tried gemini-/);
+  });
+
   it("takes over a single step when only that one runs out", async () => {
     generateContent.mockImplementation(async (request: Request) => {
       const properties = (request.config?.responseJsonSchema as { properties: object }).properties;

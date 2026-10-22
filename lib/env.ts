@@ -23,6 +23,16 @@ function positiveInt(name: string, fallback: number): number {
   return Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
+/**
+ * Free-tier Gemini models that answered on a free key when this was written. Names
+ * move: gemini-2.5-* already 404s for new keys. Override with GEMINI_FALLBACK_MODELS.
+ */
+const DEFAULT_FALLBACK_MODELS = [
+  "gemini-3.5-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-3.1-flash-lite",
+];
+
 export const env = {
   get geminiApiKey() {
     return required("GEMINI_API_KEY");
@@ -34,6 +44,27 @@ export const env = {
    */
   get model() {
     return process.env.GEMINI_MODEL ?? "gemini-3.6-flash";
+  },
+  /**
+   * Other Gemini models to try, in order, when the one above is out of quota (429),
+   * overloaded (503) or not available to this key (404). Free-tier quota is counted
+   * per model, so the next model on the same key usually still has some.
+   *
+   * Unset means the default list. Set but empty (`GEMINI_FALLBACK_MODELS=`) means no
+   * chain at all. Names that do not exist for the key are skipped with a warning, so
+   * a stale entry costs one failed call, not an outage.
+   */
+  get geminiFallbackModels(): string[] {
+    const raw = process.env.GEMINI_FALLBACK_MODELS;
+    const list = raw === undefined ? DEFAULT_FALLBACK_MODELS : raw.split(",");
+    const seen = new Set<string>([this.model]);
+    return list
+      .map((name) => name.trim())
+      .filter((name) => name !== "" && !seen.has(name) && seen.add(name));
+  },
+  /** The whole chain, in the order it is tried: the pinned model, then the others. */
+  get geminiModels(): string[] {
+    return [this.model, ...this.geminiFallbackModels];
   },
   /** Which protocol document to load. Bump this, don't edit a live protocol. */
   get protocolFile() {

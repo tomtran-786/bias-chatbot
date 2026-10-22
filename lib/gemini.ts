@@ -32,6 +32,7 @@ import {
   type Part,
 } from "@google/genai";
 import { env } from "./env";
+import { inTryOrder, markUnavailable, type Refusal } from "./model-health";
 import type { Source } from "./sources";
 import type { Intake, ItemFacts, Photo } from "./item";
 import {
@@ -56,11 +57,22 @@ export { MalformedAppraisalError };
 export type { MarketReading, TurnContext };
 export type { TranscriptMessage };
 
-/** Thrown when the Gemini quota is exhausted (HTTP 429). */
+/**
+ * Thrown when Gemini's quota is exhausted (HTTP 429). `tried` is every model that
+ * was asked before giving up, which is more than one when a chain is configured.
+ */
 export class RateLimitError extends Error {
-  constructor() {
+  constructor(readonly tried: readonly string[] = []) {
     super("Gemini quota exhausted");
     this.name = "RateLimitError";
+  }
+}
+
+/** Thrown when no model in the chain exists for this key (HTTP 404): a configuration problem. */
+export class ModelNotFoundError extends Error {
+  constructor(readonly tried: readonly string[] = []) {
+    super("No configured Gemini model is available to this key");
+    this.name = "ModelNotFoundError";
   }
 }
 
@@ -91,7 +103,7 @@ const STREAM_TIMEOUT_MS = 120_000;
  * why the backup model takes over for it too.
  */
 export class ModelOverloadedError extends Error {
-  constructor() {
+  constructor(readonly tried: readonly string[] = []) {
     super("Gemini is overloaded");
     this.name = "ModelOverloadedError";
   }
@@ -148,8 +160,75 @@ function toContents(
 const TEMPERATURE = 0.4;
 
 /**
+ * Whether an error means "this model, now" rather than "this request", and so
+ * whether the next model in the chain is worth trying.
+ *
+ * Quota, overload and a name the key cannot use are all about the model. A timeout
+ * is not: it has already used up its 45 seconds, so a second attempt would not fit
+ * in the request. A bad answer is not either: a different model would not make it
+ * the same bad answer, and swapping silently would hide a prompt problem.
+ */
+function refusalOf(error: unknown): Refusal | null {
+  if (error instanceof RateLimitError || error instanceof ModelOverloadedError) return "transient";
+  if (error instanceof ModelNotFoundError) return "missing";
+  return null;
+}
+
+/** What to say after every model in the chain has refused: the most useful of their errors. */
+function exhausted(failures: ReadonlyArray<{ model: string; error: unknown }>): Error {
+  const tried = failures.map((failure) => failure.model);
+  const errors = failures.map((failure) => failure.error);
+  // A quota error is the most actionable, so it wins over an overload.
+  if (errors.some((e) => e instanceof RateLimitError)) return new RateLimitError(tried);
+  if (errors.some((e) => e instanceof ModelOverloadedError)) return new ModelOverloadedError(tried);
+  return new ModelNotFoundError(tried);
+}
+
+function noteRefusal(model: string, error: unknown, remaining: number) {
+  const name = error instanceof Error ? error.name : "error";
+  console.warn(
+    `Gemini model ${model} refused (${name})${remaining > 0 ? `; ${remaining} more to try` : ""}`,
+  );
+}
+
+/** "Tried a, b, c." for a message, or nothing when only one model was ever asked. */
+export function triedNote(error: unknown): string {
+  const tried = (error as { tried?: readonly string[] } | null)?.tried ?? [];
+  return tried.length > 1 ? ` Tried ${tried.join(", ")}.` : "";
+}
+
+/**
+ * Runs `attempt` against each model in the chain until one answers.
+ *
+ * `attempt` throws whatever the SDK throws; it is classified here. The order puts
+ * models that just refused last (see lib/model-health.ts), and a model that refuses
+ * is remembered for next time.
+ */
+async function withModels<T>(attempt: (model: string) => Promise<T>): Promise<T> {
+  const models = inTryOrder(env.geminiModels);
+  const failures: Array<{ model: string; error: unknown }> = [];
+
+  for (const [index, model] of models.entries()) {
+    try {
+      return await attempt(model);
+    } catch (raw) {
+      const error = normalise(raw);
+      const refusal = refusalOf(error);
+      if (!refusal) throw error;
+      markUnavailable(model, refusal);
+      failures.push({ model, error });
+      noteRefusal(model, error, models.length - index - 1);
+    }
+  }
+  throw exhausted(failures);
+}
+
+/**
  * Streams the model's reply. Raw text — stage markers are still embedded and
  * must be stripped by the caller before the person sees it.
+ *
+ * Moves to the next model only if the current one refused before saying anything:
+ * half a reply from one model and the rest from another would be worse than an error.
  */
 export async function* streamReply(
   transcript: TranscriptMessage[],
@@ -157,29 +236,39 @@ export async function* streamReply(
   stage: Stage,
   context: TurnContext,
 ): AsyncGenerator<string> {
-  let stream;
-  try {
-    stream = await getClient().models.generateContentStream({
-      model: env.model,
-      contents: toContents(transcript, photos, stage !== "verdict"),
-      config: {
-        systemInstruction: systemInstruction(stage, context),
-        temperature: TEMPERATURE,
-        abortSignal: AbortSignal.timeout(STREAM_TIMEOUT_MS),
-      },
-    });
-  } catch (error) {
-    throw normalise(error);
-  }
+  const models = inTryOrder(env.geminiModels);
+  const failures: Array<{ model: string; error: unknown }> = [];
 
-  try {
-    for await (const chunk of stream) {
-      const text = chunk.text;
-      if (text) yield text;
+  for (const [index, model] of models.entries()) {
+    let spoke = false;
+    try {
+      const stream = await getClient().models.generateContentStream({
+        model,
+        contents: toContents(transcript, photos, stage !== "verdict"),
+        config: {
+          systemInstruction: systemInstruction(stage, context),
+          temperature: TEMPERATURE,
+          abortSignal: AbortSignal.timeout(STREAM_TIMEOUT_MS),
+        },
+      });
+      for await (const chunk of stream) {
+        const text = chunk.text;
+        if (text) {
+          spoke = true;
+          yield text;
+        }
+      }
+      return;
+    } catch (raw) {
+      const error = normalise(raw);
+      const refusal = refusalOf(error);
+      if (spoke || !refusal) throw error;
+      markUnavailable(model, refusal);
+      failures.push({ model, error });
+      noteRefusal(model, error, models.length - index - 1);
     }
-  } catch (error) {
-    throw normalise(error);
   }
+  throw exhausted(failures);
 }
 
 /**
@@ -195,10 +284,9 @@ export async function extractFacts(
   photos: Photo[],
   intake: Intake,
 ): Promise<ItemFacts> {
-  let response;
-  try {
-    response = await getClient().models.generateContent({
-      model: env.model,
+  const response = await withModels((model) =>
+    getClient().models.generateContent({
+      model,
       contents: [
         ...toContents(transcript, photos, true),
         { role: "user", parts: [{ text: FACTS_REQUEST }] },
@@ -210,10 +298,8 @@ export async function extractFacts(
         responseJsonSchema: FACTS_SCHEMA,
         abortSignal: AbortSignal.timeout(CALL_TIMEOUT_MS),
       },
-    });
-  } catch (error) {
-    throw normalise(error);
-  }
+    }),
+  );
 
   return parseFacts(response.text);
 }
@@ -234,10 +320,9 @@ export async function readListings(
 ): Promise<MarketReading> {
   if (sources.length === 0) return EMPTY_READING;
 
-  let response;
-  try {
-    response = await getClient().models.generateContent({
-      model: env.model,
+  const response = await withModels((model) =>
+    getClient().models.generateContent({
+      model,
       contents: readingPrompt(facts, sources),
       config: {
         systemInstruction: EXTRACT_INSTRUCTION,
@@ -246,10 +331,8 @@ export async function readListings(
         responseJsonSchema: extractionSchema(sources.length),
         abortSignal: AbortSignal.timeout(CALL_TIMEOUT_MS),
       },
-    });
-  } catch (error) {
-    throw normalise(error);
-  }
+    }),
+  );
 
   return parseReading(response.text);
 }
@@ -270,6 +353,9 @@ function normalise(error: unknown): unknown {
   }
   if (error instanceof ApiError && error.status === 503) {
     return new ModelOverloadedError();
+  }
+  if (error instanceof ApiError && error.status === 404) {
+    return new ModelNotFoundError();
   }
   if (isAbort(error)) return new ModelTimeoutError();
   return error;

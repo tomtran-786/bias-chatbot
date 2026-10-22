@@ -75,11 +75,35 @@ searching itself and the model only reads what it finds.
 rare one) and prints what each stage found. It spends about 9 Tavily credits.
 `npm run spike -- --save` also records `tests/fixtures/tavily-sample.json`.
 
-### Backup model: DeepSeek (optional, not free)
+### When Gemini runs out: other Gemini models first
 
-When Gemini's free quota runs out (429) or it is overloaded (503), the app can finish
-the request with DeepSeek instead. It is off unless `DEEPSEEK_API_KEY` is set; with no
-key a Gemini quota error is just reported, and the app stays free.
+Gemini's free quota is counted **per model**, and on the same key several models
+usually still have some when one is spent. So every call goes down a chain: the model
+in `GEMINI_MODEL`, then each name in `GEMINI_FALLBACK_MODELS`, moving on when one says
+quota (429), overloaded (503) or not available to the key (404). The chain is
+free, needs no new account, and the models can see photos, so nothing about the
+conversation changes. When one is refused, the next call tries it last for a minute
+(ten for a 404) instead of opening with the same refusal again.
+
+- **What does not move on:** a timeout (it has already used its 45 seconds, and a second
+  attempt would not fit in the request), a bad request, or an answer that was received but
+  is wrong (swapping models would hide a prompt problem). A reply that has already started
+  is never continued by a different model.
+- **If every model refuses**, the error says which were tried (`Tried a, b, c.`) and a quota
+  error outranks an overload, since it is the one to act on.
+- **Configure it** in `.env.local`; unset means a default list, set-but-empty means no
+  chain. Names that do not exist for the key are skipped with a warning in the server log,
+  so a stale entry costs one refused call, not an outage. Model names move — `gemini-2.5-*`
+  already 404s for new keys and some models answer 429 (no free quota) or hang under load —
+  so check what answers on your key before relying on the list.
+- **Quality varies.** A `flash-lite` model reads search results and extracts facts a little
+  less carefully than a full flash model; the verbatim price check applies to every one.
+
+### Last resort: DeepSeek (optional, not free)
+
+Only when **every** Gemini model in the chain has refused (quota or overload), the app
+can finish the request with DeepSeek instead. It is off unless `DEEPSEEK_API_KEY` is set;
+with no key a Gemini quota error is just reported, and the app stays free.
 
 - **It is not free.** DeepSeek is prepaid: model costs come off a topped-up balance (or
   a granted one, which its docs do not promise), and at zero the API answers 402. So it
@@ -95,7 +119,7 @@ key a Gemini quota error is just reported, and the app stays free.
   (`lib/prompts.ts`); the backup differs only in transport. Its JSON mode cannot enforce
   a schema, so the schema is in the prompt and the same zod checks and the same verbatim
   price check apply to its answers.
-- **What triggers it.** Only a Gemini quota error or overload, and for a reply only if
+- **What triggers it.** Only when the whole Gemini chain has refused for quota or overload, and for a reply only if
   Gemini failed before saying anything: half of one reply from each model would be worse
   than an error. Timeouts and malformed answers do not trigger it.
 - **It says so.** The browser is told when the backup answers and shows a notice; the
@@ -225,6 +249,7 @@ being precise about rather than overclaiming.
 | `PROTOCOL_FILE` | `protocol_v2.md` | Which protocol to load |
 | `MAX_TURNS` | `20` | Per-conversation cap, guards the quota |
 | `TAVILY_API_KEY` | — | Required to look up the market; read only when an appraisal runs |
+| `GEMINI_FALLBACK_MODELS` | `gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite` | Gemini models tried, in order, after `GEMINI_MODEL`; empty means none |
 | `DEEPSEEK_API_KEY` | — | Optional backup model; blank means none. Prepaid, not free |
 | `DEEPSEEK_MODEL` | `deepseek-flash` | Which DeepSeek model the backup uses |
 | `DAILY_SEARCH_BUDGET` | `40` | Tavily calls per UTC day, counted in memory |
