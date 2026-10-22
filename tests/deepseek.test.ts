@@ -165,7 +165,7 @@ describe("readListings", () => {
   const sources = [{ url: "https://www.ebay.com/itm/1", title: "t", text: "Sold for US $312.00" }];
   const reading = {
     listings: [{ title: "t", priceText: "US $312.00", kind: "sold", condition: "good", platform: "eBay", sourceIndex: 0 }],
-    newPrice: 699,
+    newPrice: { priceText: "$699.00", sourceIndex: 0 },
     position: "below",
     positionEvidence: "scratches",
   };
@@ -188,7 +188,7 @@ describe("readListings", () => {
 
   it("returns what it read, and makes no call for no sources", async () => {
     const out = await readListings(facts, sources, stub(completion(JSON.stringify(reading))));
-    expect(out).toMatchObject({ newPrice: 699, position: "below" });
+    expect(out).toMatchObject({ newPrice: { priceText: "$699.00", sourceIndex: 0 }, position: "below" });
     expect(out.listings).toHaveLength(1);
 
     const fetchImpl = stub();

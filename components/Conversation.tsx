@@ -12,6 +12,7 @@ import {
   type Intake,
   type Photo,
 } from "@/lib/item";
+import { citeListings, safeHref } from "@/lib/citations";
 import { formatUsd, type AppraiseResponse } from "@/lib/pricing";
 import {
   FACT_COUNT,
@@ -50,33 +51,35 @@ type ChatError =
   | "budget_exhausted"
   | "model_overloaded";
 
+// Plain words and something to do. Which service is behind a failure, and how
+// much of its allowance is left, is not the person's business: the server logs
+// the cause and the reply carries only a code.
+const REPLY_FAILED =
+  "Couldn’t get a reply just now. Send it again in a minute — nothing you wrote is lost.";
+const LIMIT_REACHED = "The assistant has reached today’s limit. Try again tomorrow.";
+const TOO_LARGE = "A photo is too large to send. Remove it and attach a smaller one.";
+
 const ERROR_COPY: Record<ChatError, string> = {
-  rate_limited:
-    "The AI service has hit its request limit. Wait a minute and send again — nothing you wrote is lost.",
-  server_error: "Something went wrong generating a reply. Send it again.",
+  rate_limited: REPLY_FAILED,
+  model_overloaded: REPLY_FAILED,
+  server_error: REPLY_FAILED,
   turn_limit: "This conversation has reached its maximum length.",
   out_of_order: "That step is not available yet.",
-  payload_too_large:
-    "A photo is too large to send. Remove it and attach a smaller one.",
-  budget_exhausted:
-    "This app’s daily limit on AI calls is used up. It resets at midnight UTC, or when the server restarts.",
-  model_overloaded:
-    "The AI model is overloaded right now. Wait a moment and send again — nothing you wrote is lost.",
+  payload_too_large: TOO_LARGE,
+  budget_exhausted: LIMIT_REACHED,
 };
+
+const LOOKUP_FAILED = "Couldn’t look up the market right now. Try again in a minute.";
 
 /** What the market lookup can refuse with, in words a person can act on. */
 const APPRAISE_ERROR_COPY: Record<string, string> = {
-  rate_limited:
-    "A free-tier rate limit was hit. Wait a minute and try again; if it keeps happening, the day’s quota may be used up.",
-  search_quota:
-    "The search service’s free credits for this month are used up, so the market cannot be looked up until they renew. Nothing is charged.",
-  search_unavailable:
-    "The market search is not set up correctly.",
-  search_failed: "The market search failed.",
-  budget_exhausted:
-    "This app’s daily limit on market lookups is used up. It resets at midnight UTC, or when the server restarts.",
-  payload_too_large:
-    "A photo is too large to send. Remove it and attach a smaller one.",
+  rate_limited: LOOKUP_FAILED,
+  appraisal_failed: LOOKUP_FAILED,
+  search_quota: LOOKUP_FAILED,
+  search_unavailable: LOOKUP_FAILED,
+  search_failed: LOOKUP_FAILED,
+  budget_exhausted: LIMIT_REACHED,
+  payload_too_large: TOO_LARGE,
 };
 
 const asChatError = (code: string | undefined): ChatError =>
@@ -123,8 +126,6 @@ export function Conversation() {
   const [appraising, setAppraising] = useState(false);
   const [error, setError] = useState<ChatError | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
-  // Which backup model has answered, kept: every later reply may be it too.
-  const [backupModel, setBackupModel] = useState<string | null>(null);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const opened = useRef(new Set<Stage>());
@@ -253,7 +254,8 @@ export function Conversation() {
           } else if (event.t === "stage") {
             stages.push(event.v);
           } else if (event.t === "notice") {
-            setBackupModel(event.provider);
+            // Which model answered is a system detail, not part of the story.
+            continue;
           } else {
             failed = true;
             setError(event.code);
@@ -323,32 +325,24 @@ export function Conversation() {
           setAskingPrice(asking);
           setPhase("probe");
           setFailure(
-            "The assistant could not tell exactly which model this is, so there is nothing to search for. Tell it more about the item — the model name, a label, a screenshot of the settings — then look up the market again. Your price stays locked in.",
+            "The assistant couldn’t tell which model this is. Add the model name, a label or a screenshot of the settings, then look up the market again. Your price stays locked in.",
           );
         } else {
+          // The server's reason is for whoever is running this, not for the
+          // person using it: it goes to the console and the screen gets plain copy.
           const reason = body && "reason" in body ? body.reason : undefined;
-          const known = code ? APPRAISE_ERROR_COPY[code] : undefined;
-          setFailure(
-            known
-              ? reason
-                ? `${known} ${reason}`
-                : known
-              : reason
-                ? `The market could not be looked up: ${reason}`
-                : "The market could not be looked up. Try again.",
-          );
+          if (reason) console.warn(`market lookup failed (${code ?? "unknown"}):`, reason);
+          setFailure((code && APPRAISE_ERROR_COPY[code]) || LOOKUP_FAILED);
         }
         return;
       }
 
       setAskingPrice(asking);
       setAppraisal(body as AppraiseResponse);
-      const backedUp = (body as AppraiseResponse).backup;
-      if (backedUp.length > 0) setBackupModel(backedUp[0].provider);
       setAppraisedAt(messages.length);
       setPhase("appraise");
     } catch {
-      setFailure("The market could not be looked up. Try again.");
+      setFailure(LOOKUP_FAILED);
     } finally {
       setAppraising(false);
     }
@@ -484,13 +478,8 @@ export function Conversation() {
             />
           ))}
 
-          {backupModel ? (
-            <Notice>
-              Gemini’s quota is used up, so this is being answered by {backupModel},
-              a backup model. It reads text only and cannot see your photos —
-              describe any wear or damage in words.
-            </Notice>
-          ) : null}
+          {phase === "complete" && appraisal ? <VerdictSources appraisal={appraisal} /> : null}
+
           {error ? <Notice>{ERROR_COPY[error]}</Notice> : null}
           {failure ? <Notice>{failure}</Notice> : null}
           {needsRetry ? (
@@ -672,6 +661,61 @@ function ItemCard({ intake, photos }: { intake: Intake; photos: Photo[] }) {
           ))}
         </div>
       ) : null}
+    </section>
+  );
+}
+
+/**
+ * Where the verdict's prices came from, under the verdict. Drawn by the app from
+ * the same numbered listings the market card shows, so `[3]` here is `[3]` there;
+ * the model never writes it, and the protocol is untouched.
+ */
+function VerdictSources({ appraisal }: { appraisal: AppraiseResponse }) {
+  const { counted } = citeListings(appraisal);
+  const newHref = appraisal.newPrice === null ? null : safeHref(appraisal.newPriceUrl);
+  if (counted.length === 0 && !newHref) return null;
+
+  const chip =
+    "inline-flex items-baseline gap-1.5 rounded-full border border-rule px-2.5 py-1 text-xs text-ink-secondary";
+  const link = `${chip} transition-colors hover:border-ink hover:text-ink focus-visible:border-ink focus-visible:text-ink focus-visible:outline-none`;
+
+  return (
+    <section className="rise flex flex-col gap-2" aria-label="Sources">
+      <h3 className="text-xs font-medium text-ink-muted">Sources</h3>
+      <ul className="flex flex-wrap gap-1.5">
+        {counted.map(({ n, listing, href }) => {
+          const body = (
+            <>
+              <span className="nums text-ink-muted">[{n}]</span>
+              {listing.platform}
+              <span className="nums font-medium text-ink">{formatUsd(listing.price)}</span>
+              {href ? <span aria-hidden>↗</span> : null}
+            </>
+          );
+          return (
+            <li key={n}>
+              {href ? (
+                <a href={href} target="_blank" rel="noopener noreferrer" className={link}>
+                  {body}
+                </a>
+              ) : (
+                <span className={chip}>{body}</span>
+              )}
+            </li>
+          );
+        })}
+        {newHref ? (
+          <li>
+            <a href={newHref} target="_blank" rel="noopener noreferrer" className={link}>
+              New price
+              <span className="nums font-medium text-ink">
+                {formatUsd(appraisal.newPrice!)}
+              </span>
+              <span aria-hidden>↗</span>
+            </a>
+          </li>
+        ) : null}
+      </ul>
     </section>
   );
 }

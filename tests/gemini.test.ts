@@ -202,7 +202,7 @@ describe("readListings", () => {
         listings: [
           { title: "t", priceText: "US $312.00", kind: "sold", condition: "good", platform: "eBay", sourceIndex: 0 },
         ],
-        newPrice: 699,
+        newPrice: { priceText: "$699.00", sourceIndex: 0 },
         position: "below",
         positionEvidence: "scratches",
         ...over,
@@ -257,7 +257,11 @@ describe("readListings", () => {
   it("returns the listings, the new price and the position", async () => {
     answer();
     const out = await readListings(facts, sources);
-    expect(out).toMatchObject({ newPrice: 699, position: "below", positionEvidence: "scratches" });
+    expect(out).toMatchObject({
+      newPrice: { priceText: "$699.00", sourceIndex: 0 },
+      position: "below",
+      positionEvidence: "scratches",
+    });
     expect(out.listings).toHaveLength(1);
   });
 

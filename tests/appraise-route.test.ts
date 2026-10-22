@@ -123,7 +123,6 @@ function scripted(
       text: JSON.stringify(
         overrides.reading ?? {
           listings,
-          newPrice: 700,
           position: "typical",
           positionEvidence: "light wear on the back",
         },
@@ -214,6 +213,51 @@ describe("a healthy appraisal", () => {
     expect(json.listings.find((l: { priceText: string }) => l.priceText === "US $200")).toMatchObject({
       match: "unverified",
     });
+  });
+});
+
+describe("the new price", () => {
+  const NEW_URL = "https://www.bestbuy.com/site/iphone-13/1.p";
+  /** A sixth page no listing cites, which states a new price. */
+  const withNewPricePage = [
+    ...hits,
+    { title: "iPhone 13 | Best Buy", url: NEW_URL, content: "iPhone 13 128GB. $699.99. New.", rawContent: null },
+  ];
+  const reading = (newPrice: unknown) => ({ listings, newPrice, position: "typical", positionEvidence: "" });
+
+  it("is used, and linked, when the page it cites shows it", async () => {
+    scripted({ results: withNewPricePage, reading: reading({ priceText: "$699.99", sourceIndex: 5 }) });
+    const { json } = await post(body);
+
+    expect(json.newPrice).toBe(699.99);
+    expect(json.newPriceUrl).toBe(NEW_URL);
+    expect(json.raw).toMatchObject({ newPrice: 699.99, newPriceUrl: NEW_URL });
+  });
+
+  it("is not used when the page it cites does not show that price", async () => {
+    scripted({ results: withNewPricePage, reading: reading({ priceText: "$599.99", sourceIndex: 5 }) });
+    const { json } = await post(body);
+
+    expect(json.newPrice).toBeNull();
+    expect(json.newPriceUrl).toBeNull();
+    expect(json.raw).toMatchObject({ newPrice: null, newPriceUrl: null });
+  });
+
+  it("is not used when the model took it from a different page than the one it cites", async () => {
+    scripted({ results: withNewPricePage, reading: reading({ priceText: "$699.99", sourceIndex: 0 }) });
+    const { json } = await post(body);
+
+    expect(json.newPrice).toBeNull();
+    expect(json.newPriceUrl).toBeNull();
+  });
+
+  it("does not hold the suggestion down when it cannot be checked", async () => {
+    // $320 would cap the suggestion if it were believed; nothing shows it, so it is not.
+    scripted({ results: withNewPricePage, reading: reading({ priceText: "$320.00", sourceIndex: 5 }) });
+    const { json } = await post(body);
+
+    expect(json.suggested).toEqual({ price: 300, anchor: "median", capped: false });
+    expect(json.market.count).toBe(5);
   });
 });
 
@@ -468,7 +512,7 @@ describe("the backup model", () => {
       calls.push({ system, user: body.messages.at(-1).content, body: init.body as string });
       const reading = system.includes('"listings"');
       const content = reading
-        ? (over.reading ?? { listings, newPrice: 700, position: "typical", positionEvidence: "light wear" })
+        ? (over.reading ?? { listings, position: "typical", positionEvidence: "light wear" })
         : (over.facts ?? FACTS);
       return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }] }), { status: 200 });
     });
@@ -511,7 +555,7 @@ describe("the backup model", () => {
         if (host === "openrouter.ai" && opts.openrouter === "limited") return new Response("{}", { status: 429 });
         const reading = (sent.messages[0].content as string).includes('"listings"');
         const content = reading
-          ? (opts.reading ?? { listings, newPrice: 700, position: "typical", positionEvidence: "light wear" })
+          ? (opts.reading ?? { listings, position: "typical", positionEvidence: "light wear" })
           : (opts.facts ?? FACTS);
         return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }] }), { status: 200 });
       });
@@ -606,7 +650,7 @@ describe("the backup model", () => {
     generateContent.mockImplementation(async (request: Request & { model: string }) => {
       if (request.model === env.geminiModels[0]) throw quota();
       const properties = (request.config?.responseJsonSchema as { properties: object }).properties;
-      return { text: JSON.stringify("listings" in properties ? { listings, newPrice: 700, position: "typical", positionEvidence: "" } : FACTS) };
+      return { text: JSON.stringify("listings" in properties ? { listings, position: "typical", positionEvidence: "" } : FACTS) };
     });
     const { fetchStub } = deepseekAnswers();
 

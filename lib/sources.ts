@@ -49,6 +49,17 @@ export type ExtractedListing = {
   sourceIndex: number;
 };
 
+/**
+ * The new price as the extraction step reports it: the same two handles a
+ * listing gets, so it can be checked the same way.
+ */
+export type ExtractedNewPrice = {
+  /** The price exactly as the source text shows it, e.g. "$699.99". */
+  priceText: string;
+  /** Index into the numbered sources the model was given. */
+  sourceIndex: number;
+};
+
 /** One web search result, as far as this module cares. */
 export type SearchHit = {
   title: string;

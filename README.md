@@ -164,11 +164,16 @@ stays free.
 - **What triggers a backup.** Only when the whole Gemini chain has refused for quota or overload, and for a reply only if
   Gemini failed before saying anything: half of one reply from each model would be worse
   than an error. Timeouts and malformed answers do not trigger it.
-- **It says so.** The browser is told when the backup answers and shows a notice; the
-  market card says which steps it took (`facts` is read from the messages alone, since
-  it cannot see photos; `reading` is the search results).
+- **It is not shown on screen.** The screen never names a model or says a backup
+  answered, and failures read as plain "try again" copy. The `notice` stream event and
+  the `backup` field of the market response (which step a backup took: `facts` is read
+  from the messages alone, since it cannot see photos; `reading` is the search results)
+  are still sent, for whoever is debugging, and the server's `reason` for a failed
+  lookup goes to the browser console rather than the page.
 - **Privacy.** Using it sends the conversation text, including what the person wrote
-  about the item, to DeepSeek's servers. The intake screen says so.
+  about the item, to a backup provider's servers. The intake screen says so in general
+  terms ("third-party AI services, which may use them to improve their products")
+  without naming which.
 - **If it fails too**, the error names both (Gemini's is the one classified) and says
   what happened to the backup.
 
@@ -180,7 +185,8 @@ call may need adjusting.
 ### Privacy
 
 On the free Gemini tier, what is sent to Gemini — the conversation and the photos —
-**may be used by Google to improve its products.** The intake screen says so. The
+**may be used by Google to improve its products.** The intake screen says so, in
+general terms and without naming the providers. The
 app itself stores nothing. Photos are re-encoded in the browser, which strips their
 location data, but faces, addresses and documents in the frame still go through.
 The search service sees only the queries (an item name, never a price).
@@ -216,12 +222,17 @@ gate -> budget -> facts -> queries -> Tavily (<= 2) -> sources -> read -> ground
    the search's own summary plus every line of the page with a `$` amount, cut to about
    3,000 characters.
 6. **Read.** One model call with a response schema and no tools turns the numbered
-   sources into listings, each carrying a `sourceIndex`, never a URL.
+   sources into listings, each carrying a `sourceIndex`, never a URL. It also reports the
+   price of the item new, if a source states one, as `{ priceText, sourceIndex }`.
 7. **Ground.** A listing counts only if its `priceText` appears **word for word** in
    the text of the source it cites (whitespace collapsed; `$1,049` does not match
    `US $1,049.99`). Otherwise it is shown dimmed and left out. The link shown is always
    the address Tavily returned, never one the model wrote. Because the price is checked
    against the text, list pages and price-guide pages count when their price matches.
+   The **new price** is held to the same standard (`groundNewPrice`): the source must
+   exist, the price must appear word for word in its text, and it must be one USD
+   amount. A new price that fails is not used as a ceiling, and one that passes is
+   linked to the page it came from.
 8. **Price** (`lib/pricing.ts`).
    - Prices are parsed from the text as shown ("US $1,049.99"); other currencies,
      ranges and unparseable prices are dropped.
@@ -240,6 +251,20 @@ gate -> budget -> facts -> queries -> Tavily (<= 2) -> sources -> read -> ground
 
 The server recomputes all of this on the verdict turn from the raw listings the
 browser posts back; it does not believe a median the client sends.
+
+### What the person sees
+
+The market card tells one story, top to bottom: the title is the takeaway ("Your $520
+is 24% above the market median", from `marketHeadline`), then the two figures it
+compares, a strip of dots showing where their price sits among the listings (no
+gridlines, no legend, the two lines that matter labelled directly), the suggested
+price, and the sources it stands on. Every price that came from the web is a
+numbered, clickable source: the same `[n]` (`lib/citations.ts`) marks the dot, the
+row in the sources list grouped by platform, and the chip in the "Sources" line the
+app draws under the verdict. The model does not write that line, so the protocol is
+untouched. Prices that could not be confirmed on their page sit in a collapsed
+section, numbered after the counted ones. How the search was run is behind "How this
+was worked out", and the card names no vendor or model.
 
 ## Photos
 

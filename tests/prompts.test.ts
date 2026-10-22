@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { MalformedAppraisalError, parseJson, unwrapJson } from "@/lib/prompts";
+import {
+  MalformedAppraisalError,
+  extractionSchema,
+  parseJson,
+  parseReading,
+  unwrapJson,
+} from "@/lib/prompts";
 
 describe("unwrapJson", () => {
   const object = '{"a":1,"b":{"c":[2,3]}}';
@@ -34,5 +40,45 @@ describe("parseJson", () => {
     expect(() => parseJson("{broken", "item facts")).toThrow(MalformedAppraisalError);
     expect(() => parseJson("   ", "item facts")).toThrow(/empty/);
     expect(() => parseJson(undefined, "item facts")).toThrow(/empty/);
+  });
+});
+
+describe("the new price in a reading", () => {
+  const reading = (newPrice?: unknown) =>
+    JSON.stringify({
+      listings: [],
+      ...(newPrice === undefined ? {} : { newPrice }),
+      position: "typical",
+      positionEvidence: "",
+    });
+
+  it("is a price as written plus the source it was read from", () => {
+    expect(parseReading(reading({ priceText: "$699.99", sourceIndex: 2 })).newPrice).toEqual({
+      priceText: "$699.99",
+      sourceIndex: 2,
+    });
+  });
+
+  it("is none when the model gave none", () => {
+    expect(parseReading(reading()).newPrice).toBeNull();
+    expect(parseReading(reading(null)).newPrice).toBeNull();
+  });
+
+  it("is none, rather than a failed reading, when it is not in the shape asked for", () => {
+    // A bare number has no source, so it could not be checked and would not be used anyway.
+    expect(parseReading(reading(699)).newPrice).toBeNull();
+    expect(parseReading(reading({ priceText: "$699" })).newPrice).toBeNull();
+  });
+
+  it("still rejects a reading whose listings are wrong", () => {
+    expect(() => parseReading('{"listings":"none","position":"typical","positionEvidence":""}')).toThrow(
+      MalformedAppraisalError,
+    );
+  });
+
+  it("can only cite a source that exists, like a listing", () => {
+    const { properties } = extractionSchema(3);
+    expect(properties.newPrice.properties.sourceIndex.enum).toEqual([0, 1, 2]);
+    expect(properties.newPrice.required).toEqual(["priceText", "sourceIndex"]);
   });
 });

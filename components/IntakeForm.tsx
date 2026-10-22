@@ -65,16 +65,10 @@ export function IntakeForm({
         </div>
         <p className="text-xs leading-relaxed text-ink-muted">
           Photos are resized and re-saved in your browser first, which also removes
-          their location data. This app stores nothing after you close the page.
-        </p>
-        <p className="text-xs leading-relaxed text-ink-muted">
-          <span className="font-medium text-ink-secondary">Privacy:</span> this
-          runs on Google’s free Gemini tier, where what is sent — your messages
-          and photos included — may be used by Google to improve its products.
-          Leave out faces, addresses, documents and anything you would not want
-          that done with. If a backup is set up and Gemini’s quota runs out, the
-          text of the conversation — never the photos — may go to OpenRouter or
-          DeepSeek instead, and you are told which when it does.
+          their location data. Your messages and photos are processed by
+          third-party AI services, which may use them to improve their products.
+          Leave out faces, addresses and documents. This app stores nothing after
+          you close the page.
         </p>
       </div>
 

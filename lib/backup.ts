@@ -497,7 +497,7 @@ const READING_EXAMPLE = {
       sourceIndex: 0,
     },
   ],
-  newPrice: 699,
+  newPrice: { priceText: "$699.00", sourceIndex: 0 },
   position: "typical",
   positionEvidence: "light wear, comparable to the listings",
 };

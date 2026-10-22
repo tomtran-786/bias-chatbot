@@ -2,17 +2,28 @@
 
 import { useState } from "react";
 import {
+  citeListings,
+  hostLabel,
+  safeHref,
+  type CitedListing,
+  type CitedPlatform,
+} from "@/lib/citations";
+import {
+  NEW_PRICE_CEILING,
   OVERPRICED_AT,
-  formatPct,
   formatUsd,
   formatUsdWhole,
+  marketHeadline,
   type AppraiseResponse,
-  type PricedListing,
 } from "@/lib/pricing";
 
 /**
  * The market, laid out for one decision: is my price in line with what people
  * are paying?
+ *
+ * One story, told top to bottom. The title is the takeaway ("Your $520 is 24%
+ * above the market median"), and everything under it is the evidence for it,
+ * ending at the conclusion — the suggested price — and the sources it stands on.
  *
  * The forms follow from what each piece of data has to do. Two numbers the
  * reader compares — their price and the market median — are a pair of large
@@ -20,11 +31,13 @@ import {
  * price axis, because the question is "where does my price sit among them", and
  * a strip answers that with position alone. It uses the emphasis form: every
  * listing is the same neutral grey, and the one accent is their own price,
- * the thing the story is about. The platforms are a small table.
+ * the thing the story is about. There are no gridlines and no legend: the two
+ * lines that matter are labelled where they are, and one caption says the rest.
  *
- * Colour never carries meaning alone. The two figures, the median and their
- * price are all labelled in words; the legend names every mark; and every value
- * the strip's hover would show is also in the listings below it, so there is no
+ * Every price that came from the web is a numbered, clickable source. The same
+ * `[n]` marks the dot, the row below and the verdict's sources line
+ * (lib/citations.ts). Colour never carries meaning alone, and every value the
+ * strip's hover would show is also in the rows below it, so there is no
  * information only a pointer can reach.
  */
 export function MarketCard({
@@ -38,136 +51,101 @@ export function MarketCard({
   pending: boolean;
   onContinue: () => void;
 }) {
-  const { market, suggested, gap } = appraisal;
-  const counted = appraisal.listings.filter((l) => l.status === "used");
-  const uncounted = appraisal.listings.filter((l) => l.status === "unverified");
+  const { market, suggested } = appraisal;
+  const citations = citeListings(appraisal);
 
   return (
     <article className="rise overflow-hidden rounded-2xl border border-rule bg-surface">
       <header className="flex flex-col gap-1.5 border-b border-rule px-5 py-5 sm:px-6">
-        <p className="text-xs font-medium tracking-wide text-ink-muted uppercase">
-          The market for your {appraisal.item.model || "item"}
-        </p>
-        <p className="text-sm leading-relaxed text-ink-secondary">{basisSentence(appraisal)}</p>
+        <h2 className="text-lg leading-snug font-semibold tracking-tight text-pretty">
+          {marketHeadline(appraisal)}
+        </h2>
+        <p className="text-sm leading-relaxed text-ink-secondary">{subtitle(appraisal)}</p>
       </header>
 
       <PricePair appraisal={appraisal} />
 
-      {gap ? (
-        <p className="border-b border-rule px-5 py-3.5 text-sm leading-relaxed sm:px-6">
-          <span className="font-medium">
-            {Math.abs(gap.pct) < 0.005
-              ? "Right at the market median."
-              : `${formatPct(gap.pct)} ${gap.pct > 0 ? "above" : "below"} the market median.`}
-          </span>{" "}
-          <span className="text-ink-secondary">
-            {appraisal.overpriced
-              ? `That is past the ${Math.round(OVERPRICED_AT * 100)}% mark this check uses for a price that is running high.`
-              : gap.pct < 0
-                ? "You would be listing under what similar items are asking."
-                : "That is within the range of the market."}
-          </span>
-        </p>
-      ) : (
-        <p className="border-b border-rule px-5 py-3.5 text-sm leading-relaxed text-ink-secondary sm:px-6">
-          Too few listings could be checked against their source to state a market
-          price, so there is no comparison to your {formatUsd(appraisal.asking)}.
-        </p>
-      )}
-
-      {market.tier !== "none" ? <Strip appraisal={appraisal} counted={counted} /> : null}
+      {market.tier !== "none" ? (
+        <Strip appraisal={appraisal} counted={citations.counted} />
+      ) : null}
 
       {suggested ? (
-        <section className="flex flex-col gap-1.5 border-b border-rule px-5 py-5 sm:px-6">
-          <p className="text-xs font-medium tracking-wide text-ink-muted uppercase">
-            Suggested price
-          </p>
-          <p className="text-3xl font-semibold tracking-tight">{formatUsd(suggested.price)}</p>
-          <p className="text-sm leading-relaxed text-ink-secondary">{suggestionNote(appraisal)}</p>
+        <Suggestion appraisal={appraisal} countedCount={citations.counted.length} />
+      ) : null}
+
+      {citations.counted.length > 0 ? (
+        <section id="sources" className="scroll-mt-4 border-b border-rule px-5 py-4 sm:px-6">
+          <h3 className="text-sm font-medium">
+            {market.tier === "none" ? "Verified listings, too few to price from" : "Sources"}
+          </h3>
+          {citations.platforms
+            .filter((platform) => platform.listings.length > 0)
+            .map((platform) => (
+              <PlatformGroup
+                key={platform.platform}
+                platform={platform}
+                showMedian={market.tier !== "none"}
+              />
+            ))}
         </section>
       ) : null}
 
-      {appraisal.platforms.length > 0 && market.tier !== "none" ? (
-        <section className="border-b border-rule px-5 py-4 sm:px-6">
-          <h3 className="text-sm font-medium">By platform</h3>
-          <table className="mt-2 w-full text-sm">
-            <thead>
-              <tr className="text-left text-xs text-ink-muted">
-                <th className="py-1 font-normal">Platform</th>
-                <th className="py-1 text-right font-normal">Listings</th>
-                <th className="py-1 text-right font-normal">Median</th>
-              </tr>
-            </thead>
-            <tbody>
-              {appraisal.platforms.map((row) => (
-                <tr key={row.platform} className="border-t border-rule">
-                  <td className="py-1.5">{row.platform}</td>
-                  <td className="nums py-1.5 text-right text-ink-secondary">{row.count}</td>
-                  <td className="nums py-1.5 text-right">{formatUsd(row.median)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-      ) : null}
-
-      {counted.length > 0 ? (
-        <ListingList
-          title={
-            market.tier === "none"
-              ? `Verified listings, too few to price from (${counted.length})`
-              : `Listings counted (${counted.length})`
-          }
-          listings={counted}
-        />
-      ) : null}
-      {uncounted.length > 0 ? (
-        <ListingList
-          title={`Shown, not counted (${uncounted.length})`}
-          note="These prices did not appear word for word in the text the search returned for that page, so they could not be tied to a real listing."
-          listings={uncounted}
-          dim
-        />
-      ) : null}
-
-      <footer className="flex flex-col gap-4 bg-sunken px-5 py-5 sm:px-6">
-        {appraisal.queries.length > 0 ? (
-          <div className="flex flex-col gap-1.5">
-            <p className="text-xs font-medium text-ink-secondary">Searched for</p>
-            <ul className="flex flex-col gap-1">
-              {appraisal.queries.map((query) => (
-                <li key={query} className="text-xs text-ink-muted">
-                  “{query}”
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-        {appraisal.backup.length > 0 ? (
-          <p className="text-xs leading-relaxed text-ink-secondary">
-            Gemini’s quota was used up, so a backup model did part of this:{" "}
-            {appraisal.backup
-              .map((entry) =>
-                entry.step === "facts"
-                  ? `${entry.provider} worked out the item from your messages alone, since it cannot see photos`
-                  : `${entry.provider} read the search results`,
-              )
-              .join(", and ")}
-            .
+      {citations.unverified.length > 0 ? (
+        <details className="border-b border-rule px-5 py-3.5 sm:px-6">
+          <summary className="cursor-pointer text-sm text-ink-secondary">
+            {citations.unverified.length === 1
+              ? "1 more price couldn’t be confirmed on its page"
+              : `${citations.unverified.length} more prices couldn’t be confirmed on their page`}
+          </summary>
+          <p className="mt-2 text-xs leading-relaxed text-ink-muted">
+            These prices didn’t appear in the text of the page they were found on,
+            so they are not part of the median.
           </p>
-        ) : null}
-        <p className="text-xs leading-relaxed text-ink-muted">
-          Search results via Tavily, read by an AI model. A price is counted only
-          if it appears word for word in the page text the search returned. They
-          are asking or sold prices, not offers you will receive, and a search can
-          miss listings or pick up the wrong model.
+          <ul className="mt-1 flex flex-col opacity-60">
+            {citations.unverified.map((cited) => (
+              <li key={cited.n}>
+                <SourceRow cited={cited} />
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+
+      <footer className="flex flex-col gap-3 bg-sunken px-5 py-5 sm:px-6">
+        <p className="text-xs leading-relaxed text-ink-secondary">
+          Prices from public listings found by web search. Asking and sold prices,
+          not offers you’ll receive.
         </p>
+        <details>
+          <summary className="cursor-pointer text-xs font-medium text-ink-secondary">
+            How this was worked out
+          </summary>
+          <div className="mt-2 flex flex-col gap-3 text-xs leading-relaxed text-ink-muted">
+            {appraisal.queries.length > 0 ? (
+              <div className="flex flex-col gap-1">
+                <p className="font-medium text-ink-secondary">Searched for</p>
+                <ul className="flex flex-col gap-0.5">
+                  {appraisal.queries.map((query) => (
+                    <li key={query}>“{query}”</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            <p>
+              An AI reads the search results and reports each listing. A price counts
+              only if it appears word for word in the text of the page it came from.
+              The median uses sold prices when there are five or more, otherwise
+              asking prices, and the app works out every figure itself. A search can
+              miss listings or pick up the wrong model.
+            </p>
+          </div>
+        </details>
         {canContinue ? (
           <button
             type="button"
             onClick={onContinue}
             disabled={pending}
-            className="self-start rounded-full bg-ink px-5 py-2.5 text-sm font-medium text-plane transition-opacity hover:opacity-90 disabled:opacity-40"
+            className="mt-1 self-start rounded-full bg-ink px-5 py-2.5 text-sm font-medium text-plane transition-opacity hover:opacity-90 disabled:opacity-40"
           >
             {pending ? "Thinking…" : "See my verdict"}
           </button>
@@ -175,6 +153,19 @@ export function MarketCard({
       </footer>
     </article>
   );
+}
+
+/** The model, then what the median was made of; and, if it applies, why the price is flagged. */
+function subtitle(a: AppraiseResponse): string {
+  return [
+    a.item.model ? `${a.item.model}.` : null,
+    basisSentence(a),
+    a.overpriced
+      ? `Past the ${Math.round(OVERPRICED_AT * 100)}% mark this check uses for a price that is running high.`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 function basisSentence(a: AppraiseResponse): string {
@@ -193,6 +184,7 @@ function basisSentence(a: AppraiseResponse): string {
   return [`Median of ${what}.`, ...caveats].join(" ");
 }
 
+/** Why the suggestion sits where it does. The new-price cap is added by the caller, as a link. */
 function suggestionNote(a: AppraiseResponse): string {
   const { suggested, market } = a;
   if (!suggested) return "";
@@ -212,10 +204,59 @@ function suggestionNote(a: AppraiseResponse): string {
       parts.push(evidence.charAt(0).toUpperCase() + evidence.slice(1));
     }
   }
-  if (suggested.capped && a.newPrice !== null) {
-    parts.push(`Held below 90% of the new price (${formatUsd(a.newPrice)}).`);
-  }
   return parts.join(" ");
+}
+
+const linkClass =
+  "underline decoration-rule-strong underline-offset-4 transition-colors hover:decoration-ink";
+
+function Suggestion({
+  appraisal,
+  countedCount,
+}: {
+  appraisal: AppraiseResponse;
+  countedCount: number;
+}) {
+  const { suggested, newPrice } = appraisal;
+  if (!suggested) return null;
+
+  const newHref = safeHref(appraisal.newPriceUrl);
+  const newHost = hostLabel(newHref);
+
+  return (
+    <section className="flex flex-col gap-1.5 border-b border-rule px-5 py-5 sm:px-6">
+      <p className="text-xs font-medium tracking-wide text-ink-muted uppercase">
+        Suggested price
+      </p>
+      <p className="text-3xl font-semibold tracking-tight">{formatUsd(suggested.price)}</p>
+      <p className="text-sm leading-relaxed text-ink-secondary">
+        {suggestionNote(appraisal)}
+        {suggested.capped && newPrice !== null ? (
+          <>
+            {" "}
+            Held below {Math.round(NEW_PRICE_CEILING * 100)}% of the new price (
+            {newHref ? (
+              <a href={newHref} target="_blank" rel="noopener noreferrer" className={linkClass}>
+                {formatUsd(newPrice)}
+                {newHost ? ` · ${newHost}` : ""} ↗
+                <span className="sr-only"> (opens in a new tab)</span>
+              </a>
+            ) : (
+              formatUsd(newPrice)
+            )}
+            ).
+          </>
+        ) : null}
+      </p>
+      {countedCount > 0 ? (
+        <p className="text-xs text-ink-muted">
+          <a href="#sources" className={linkClass}>
+            From listings {countedCount === 1 ? "[1]" : `[1]–[${countedCount}]`}
+          </a>
+        </p>
+      ) : null}
+    </section>
+  );
 }
 
 function PricePair({ appraisal }: { appraisal: AppraiseResponse }) {
@@ -268,16 +309,23 @@ function Figure({
   );
 }
 
-/** Round tick values spanning [lo, hi]: the smallest round step giving at most about five. */
+/**
+ * Round tick values spanning [lo, hi]: the finest round step that still gives no
+ * more than four, so the axis stays quiet but never shrinks to a lone label.
+ */
 function niceTicks(lo: number, hi: number): number[] {
-  const span = hi - lo;
-  const raw = span / 5;
-  const magnitude = 10 ** Math.floor(Math.log10(raw));
-  const step =
-    [1, 2, 2.5, 5, 10].map((m) => m * magnitude).find((s) => s >= raw) ?? magnitude * 10;
-  const ticks: number[] = [];
-  for (let t = Math.ceil(lo / step) * step; t <= hi; t += step) ticks.push(Math.round(t * 100) / 100);
-  return ticks;
+  const magnitude = 10 ** Math.floor(Math.log10((hi - lo) / 4));
+  const steps = [0.1, 1, 10].flatMap((scale) =>
+    [1, 2, 2.5, 5].map((m) => m * magnitude * scale),
+  );
+  for (const step of steps) {
+    const ticks: number[] = [];
+    for (let t = Math.ceil(lo / step) * step; t <= hi; t += step) {
+      ticks.push(Math.round(t * 100) / 100);
+    }
+    if (ticks.length <= 4) return ticks;
+  }
+  return [];
 }
 
 /**
@@ -309,13 +357,13 @@ function Strip({
   counted,
 }: {
   appraisal: AppraiseResponse;
-  counted: PricedListing[];
+  counted: CitedListing[];
 }) {
   const [active, setActive] = useState<number | null>(null);
   const { market } = appraisal;
   const median = market.median!;
 
-  const values = [...counted.map((l) => l.price), appraisal.asking];
+  const values = [...counted.map((c) => c.listing.price), appraisal.asking];
   const lo0 = Math.min(...values);
   const hi0 = Math.max(...values);
   const pad = (hi0 - lo0) * 0.08 || hi0 * 0.1;
@@ -326,13 +374,13 @@ function Strip({
   // Stack dots that would overlap into rows, in price order.
   const rows: number[] = [];
   const placed = [...counted]
-    .sort((a, b) => a.price - b.price)
-    .map((listing) => {
-      const at = x(listing.price);
+    .sort((a, b) => a.listing.price - b.listing.price)
+    .map((cited) => {
+      const at = x(cited.listing.price);
       let row = rows.findIndex((last) => at - last >= 3.4);
       if (row === -1) row = rows.length;
       rows[row] = at;
-      return { listing, at, row };
+      return { cited, at, row };
     });
   const height = Math.max(rows.length, 1) * ROW + 16;
 
@@ -340,19 +388,20 @@ function Strip({
   const xAsking = x(appraisal.asking);
   const ticks = niceTicks(lo, hi);
   const hovered = active === null ? null : placed[active];
+  const hasLinks = counted.some((c) => c.href !== null);
 
   return (
     <section className="flex flex-col gap-3 border-b border-rule px-5 py-5 sm:px-6" aria-label="Where your price sits among the listings">
-      {/* Labels for the two markers that matter, above the plot. */}
+      {/* Direct labels for the two markers that matter, above the plot. */}
       <div className="relative h-5 text-xs font-medium">
         <span
-          className="absolute px-1.5 whitespace-nowrap"
+          className="absolute whitespace-nowrap"
           style={{ left: `${xMedian}%`, transform: `translateX(${ANCHOR_SHIFT[anchorFor(xMedian, xAsking, true)]})` }}
         >
           Median {formatUsd(median)}
         </span>
         <span
-          className="absolute px-1.5 whitespace-nowrap"
+          className="absolute whitespace-nowrap"
           style={{ left: `${xAsking}%`, transform: `translateX(${ANCHOR_SHIFT[anchorFor(xAsking, xMedian, false)]})`, top: 0 }}
         >
           {/* Two labels may share a row; the anchor rule keeps them apart. */}
@@ -360,13 +409,8 @@ function Strip({
         </span>
       </div>
 
-      <div className="relative mx-3" style={{ height }}>
-        {/* Recessive grid: hairlines, solid. */}
-        {ticks.map((t) => (
-          <span key={t} aria-hidden className="absolute top-0 bottom-0 w-px bg-rule" style={{ left: `${x(t)}%` }} />
-        ))}
-
-        {/* The middle half of the listings, as a wash. */}
+      <div className="relative" style={{ height }}>
+        {/* The middle half of the listings, as a wash. No gridlines: the axis below carries the values. */}
         {market.q1 !== null && market.q3 !== null ? (
           <span
             aria-hidden
@@ -378,8 +422,9 @@ function Strip({
         <span aria-hidden className="absolute top-0 bottom-0 w-0.5 -translate-x-1/2 bg-ink" style={{ left: `${xMedian}%` }} />
         <span aria-hidden className="absolute top-0 bottom-0 w-0.5 -translate-x-1/2 bg-accent" style={{ left: `${xAsking}%` }} />
 
-        {placed.map(({ listing, at, row }, index) => {
-          const label = `${formatUsd(listing.price)}, ${listing.platform}, ${listing.kind === "sold" ? "sold" : "asking price"}`;
+        {placed.map(({ cited, at, row }, index) => {
+          const { listing, href, n } = cited;
+          const label = `[${n}] ${formatUsd(listing.price)}, ${listing.platform}, ${listing.kind === "sold" ? "sold" : "asking price"}`;
           const style = {
             left: `${at}%`,
             top: 8 + row * ROW + DOT / 2,
@@ -409,12 +454,12 @@ function Strip({
               }}
             />
           );
-          return listing.url && /^https?:\/\//.test(listing.url) ? (
-            <a key={index} href={listing.url} target="_blank" rel="noopener noreferrer" {...common}>
+          return href ? (
+            <a key={n} href={href} target="_blank" rel="noopener noreferrer" {...common}>
               {dot}
             </a>
           ) : (
-            <span key={index} tabIndex={0} role="img" {...common}>
+            <span key={n} tabIndex={0} role="img" {...common}>
               {dot}
             </span>
           );
@@ -424,18 +469,22 @@ function Strip({
           <div
             role="tooltip"
             className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-full rounded-lg border border-rule-strong bg-surface px-2.5 py-1.5 text-xs shadow-sm whitespace-nowrap"
-            style={{ left: `${Math.min(Math.max(hovered.at, 12), 88)}%`, top: 8 + hovered.row * ROW - 6 }}
+            style={{ left: `${Math.min(Math.max(hovered.at, 22), 78)}%`, top: 8 + hovered.row * ROW - 6 }}
           >
-            <span className="nums block text-sm font-semibold">{formatUsd(hovered.listing.price)}</span>
+            <span className="nums font-semibold">
+              [{hovered.cited.n}] {formatUsd(hovered.cited.listing.price)}
+            </span>
             <span className="text-ink-secondary">
-              {hovered.listing.platform} · {hovered.listing.kind === "sold" ? "Sold" : "Asking"}
+              {" "}
+              · {hovered.cited.listing.platform} ·{" "}
+              {hovered.cited.listing.kind === "sold" ? "Sold" : "Asking"}
             </span>
           </div>
         ) : null}
       </div>
 
-      {/* The axis, with ticks that carry the values nothing is labelled with. */}
-      <div className="relative mx-3 h-4 border-t border-rule-strong text-[11px] text-ink-muted" aria-hidden>
+      {/* The axis: a few muted values, since nothing in the plot is labelled with one. */}
+      <div className="relative h-4 border-t border-rule-strong text-[11px] text-ink-muted" aria-hidden>
         {ticks.map((t) => (
           <span key={t} className="nums absolute top-1 -translate-x-1/2" style={{ left: `${x(t)}%` }}>
             {formatUsd(t)}
@@ -443,74 +492,86 @@ function Strip({
         ))}
       </div>
 
-      <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-secondary">
-        <li className="flex items-center gap-1.5">
-          <span aria-hidden className="size-2.5 rounded-full bg-mark-muted" />
-          Listings counted
-        </li>
-        {market.q1 !== null ? (
-          <li className="flex items-center gap-1.5">
-            <span aria-hidden className="h-2.5 w-4 bg-track/60" />
-            Middle half
-          </li>
-        ) : null}
-        <li className="flex items-center gap-1.5">
-          <span aria-hidden className="h-3 w-0.5 bg-ink" />
-          Median
-        </li>
-        <li className="flex items-center gap-1.5">
-          <span aria-hidden className="h-3 w-0.5 bg-accent" />
-          Your price
-        </li>
-      </ul>
+      <p className="text-xs leading-relaxed text-ink-secondary">
+        Each dot is one listing{hasLinks ? " — select it to open the source" : ""}.
+        {market.q1 !== null && market.q3 !== null
+          ? ` Shaded: middle half (${formatUsdWhole(market.q1)}–${formatUsdWhole(market.q3)}).`
+          : ""}
+      </p>
     </section>
   );
 }
 
-function ListingList({
-  title,
-  note,
-  listings,
-  dim,
+function PlatformGroup({
+  platform,
+  showMedian,
 }: {
-  title: string;
-  note?: string;
-  listings: PricedListing[];
-  dim?: boolean;
+  platform: CitedPlatform;
+  /** A median of one or two listings is the number the app withholds, so it is not shown then. */
+  showMedian: boolean;
 }) {
+  const count = `${platform.count} listing${platform.count === 1 ? "" : "s"}`;
   return (
-    <section className="border-b border-rule px-5 py-4 sm:px-6">
-      <h3 className="text-sm font-medium">{title}</h3>
-      {note ? <p className="mt-1 text-xs leading-relaxed text-ink-muted">{note}</p> : null}
-      <ul className={`mt-2 flex flex-col ${dim ? "opacity-60" : ""}`}>
-        {listings.map((listing, index) => {
-          const safe = listing.url && /^https?:\/\//.test(listing.url) ? listing.url : null;
-          return (
-            <li key={index} className="grid grid-cols-[4.5rem_1fr] gap-x-3 border-t border-rule py-2 text-sm first:border-t-0">
-              <span className="nums font-medium">{formatUsd(listing.price)}</span>
-              <span className="flex min-w-0 flex-col">
-                {safe ? (
-                  <a
-                    href={safe}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="truncate underline decoration-rule-strong underline-offset-4 transition-colors hover:decoration-ink"
-                  >
-                    {listing.title || "Listing"}
-                  </a>
-                ) : (
-                  <span className="truncate">{listing.title || "Listing"}</span>
-                )}
-                <span className="text-xs text-ink-muted">
-                  {listing.platform} · {listing.kind === "sold" ? "Sold" : "Asking price"} ·{" "}
-                  {listing.condition.replace("_", " ")}
-                  {safe ? "" : " · no link"}
-                </span>
-              </span>
-            </li>
-          );
-        })}
+    <div className="mt-3 first-of-type:mt-2">
+      <p className="nums text-sm">
+        <span className="font-medium">{platform.platform}</span>
+        <span className="text-ink-secondary">
+          {showMedian ? ` — median ${formatUsd(platform.median)} · ${count}` : ` · ${count}`}
+        </span>
+      </p>
+      <ul className="mt-1 flex flex-col">
+        {platform.listings.map((cited) => (
+          <li key={cited.n}>
+            <SourceRow cited={cited} />
+          </li>
+        ))}
       </ul>
-    </section>
+    </div>
+  );
+}
+
+/**
+ * One listing, as one row: its number, its price, what it is, where it is from.
+ * The whole row is the link, so the target is as large as the row.
+ */
+function SourceRow({ cited }: { cited: CitedListing }) {
+  const { n, listing, href } = cited;
+  const host = hostLabel(href);
+  const meta = [
+    listing.kind === "sold" ? "Sold" : "Asking",
+    listing.condition === "unknown" ? null : listing.condition.replace("_", " "),
+    href ? host : "no link",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  const body = (
+    <>
+      <span className="nums text-xs text-ink-muted">[{n}]</span>
+      <span className="nums font-semibold">{formatUsd(listing.price)}</span>
+      <span className="flex min-w-0 flex-col">
+        <span className="truncate">{listing.title || "Listing"}</span>
+        <span className="truncate text-xs text-ink-muted">
+          {meta}
+          {href ? <span aria-hidden> ↗</span> : null}
+          {href ? <span className="sr-only"> (opens in a new tab)</span> : null}
+        </span>
+      </span>
+    </>
+  );
+  const row =
+    "-mx-2 grid grid-cols-[2rem_5rem_minmax(0,1fr)] items-baseline gap-x-2 rounded-lg px-2 py-2 text-sm";
+
+  return href ? (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={`${row} outline-none transition-colors hover:bg-sunken focus-visible:bg-sunken focus-visible:ring-2 focus-visible:ring-ink`}
+    >
+      {body}
+    </a>
+  ) : (
+    <div className={row}>{body}</div>
   );
 }

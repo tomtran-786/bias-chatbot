@@ -4,7 +4,7 @@
  * into a suggested price and a gap.
  */
 import { describe, expect, it } from "vitest";
-import type { GroundedListing } from "@/lib/sources";
+import type { GroundedListing, Source } from "@/lib/sources";
 import {
   MAX_LISTINGS,
   appraisalInputSchema,
@@ -15,7 +15,9 @@ import {
   formatUsd,
   formatUsdWhole,
   gap,
+  groundNewPrice,
   listingPrice,
+  marketHeadline,
   median,
   parsePriceText,
   quartiles,
@@ -398,5 +400,123 @@ describe("appraisalInputSchema", () => {
         positionEvidence: "",
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("groundNewPrice", () => {
+  const sources: Source[] = [
+    { url: "https://www.ebay.com/itm/1", title: "listing", text: "Sold for US $312.00" },
+    { url: "https://www.bestbuy.com/site/iphone-13/1.p", title: "new", text: "iPhone 13 128GB\n$699.99\nIn stock" },
+    { url: "https://example.co.uk/phone", title: "uk", text: "Now £649.00" },
+  ];
+
+  it("keeps a price the cited page shows, with the page it came from", () => {
+    expect(groundNewPrice({ priceText: "$699.99", sourceIndex: 1 }, sources)).toEqual({
+      price: 699.99,
+      url: "https://www.bestbuy.com/site/iphone-13/1.p",
+    });
+  });
+
+  it("drops one cited to a source that does not exist", () => {
+    expect(groundNewPrice({ priceText: "$699.99", sourceIndex: 9 }, sources)).toBeNull();
+    expect(groundNewPrice({ priceText: "$699.99", sourceIndex: -1 }, sources)).toBeNull();
+  });
+
+  it("drops one the model took from a different page than the one it cites", () => {
+    expect(groundNewPrice({ priceText: "$699.99", sourceIndex: 0 }, sources)).toBeNull();
+  });
+
+  it("drops one that is not in the page text, including one with its cents cut off", () => {
+    expect(groundNewPrice({ priceText: "$799.00", sourceIndex: 1 }, sources)).toBeNull();
+    expect(groundNewPrice({ priceText: "$699", sourceIndex: 1 }, sources)).toBeNull();
+  });
+
+  it("drops one in another currency, even though the page does show it", () => {
+    expect(groundNewPrice({ priceText: "£649.00", sourceIndex: 2 }, sources)).toBeNull();
+  });
+
+  it("is none when there is no claim", () => {
+    expect(groundNewPrice(null, sources)).toBeNull();
+    expect(groundNewPrice(undefined, sources)).toBeNull();
+  });
+});
+
+describe("the new price on the appraisal", () => {
+  it("carries the page it came from, and only while there is a new price", () => {
+    const listings = many([100, 200, 300, 400, 500]);
+    const withSource = computeAppraisal(
+      { listings, newPrice: 900, newPriceUrl: "https://shop.example/p", position: "typical", positionEvidence: "" },
+      300,
+    );
+    expect(withSource).toMatchObject({ newPrice: 900, newPriceUrl: "https://shop.example/p" });
+
+    const without = computeAppraisal(
+      { listings, newPrice: null, newPriceUrl: "https://shop.example/p", position: "typical", positionEvidence: "" },
+      300,
+    );
+    expect(without.newPriceUrl).toBeNull();
+    expect(run(listings).newPriceUrl).toBeNull();
+  });
+
+  it("defaults to none in the input the browser posts back", () => {
+    const parsed = appraisalInputSchema.parse({
+      item: { searchQuery: "x", model: "x", condition: "good" },
+      listings: [],
+      position: "typical",
+      positionEvidence: "",
+    });
+    expect(parsed.newPriceUrl).toBeNull();
+  });
+});
+
+describe("marketHeadline", () => {
+  const item = { model: "iPhone 13" };
+  const headline = (asking: number, marketMedian: number | null) =>
+    marketHeadline({
+      asking,
+      gap: marketMedian === null ? null : gap(asking, marketMedian),
+      item,
+    });
+
+  it("says there is nothing to compare to when the market is too thin", () => {
+    expect(headline(450, null)).toBe("Too few verified listings to price your iPhone 13");
+    expect(marketHeadline({ asking: 450, gap: null, item: { model: "" } })).toBe(
+      "Too few verified listings to price your item",
+    );
+  });
+
+  it("says right at the median instead of a gap that rounds to nothing", () => {
+    expect(headline(450, 450)).toBe("Your $450 is right at the market median");
+    expect(headline(450, 449)).toBe("Your $450 is right at the market median"); // +0.22%
+  });
+
+  it("leads with the percentage above the median, for a price that is only a little high", () => {
+    expect(headline(480, 450)).toBe("Your $480 is 7% above the market median");
+  });
+
+  it("leads with the percentage above the median, for a price past the overpriced mark", () => {
+    const a = computeAppraisal(
+      { listings: many([400, 420, 420, 440, 450]), newPrice: null, position: "typical", positionEvidence: "" },
+      520,
+    );
+    expect(a.overpriced).toBe(true);
+    expect(marketHeadline({ ...a, item })).toBe("Your $520 is 24% above the market median");
+  });
+
+  it("leads with the percentage below the median", () => {
+    expect(headline(380, 432)).toBe("Your $380 is 12% below the market median");
+  });
+
+  it.each([
+    [520, 420],
+    [380, 432],
+    [460, 450],
+    [1000, 333],
+    [95, 100],
+  ])("rounds and signs a gap of %i against %i the way formatPct does", (asking, marketMedian) => {
+    const { pct } = gap(asking, marketMedian);
+    const shown = formatPct(pct);
+    const expected = `${shown.slice(1)} ${shown.startsWith("+") ? "above" : "below"}`;
+    expect(headline(asking, marketMedian)).toContain(` is ${expected} the market median`);
   });
 });

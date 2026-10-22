@@ -15,7 +15,10 @@
 import { z } from "zod";
 import {
   LISTING_CONDITIONS,
+  priceAppearsIn,
+  type ExtractedNewPrice,
   type GroundedListing,
+  type Source,
 } from "./sources";
 import { itemFactsSchema, type ItemFacts } from "./item";
 
@@ -77,6 +80,26 @@ export function parsePriceText(text: string): number | null {
   const cents = cents1 ?? cents2;
   const value = Number(`${whole.replace(/,/g, "")}${cents ? `.${cents}` : ""}`);
   return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/**
+ * The new price as a number and the page it came from, or null.
+ *
+ * Held to the same standard as a listing, because it is used as a ceiling: the
+ * cited source must exist, the price must appear word for word in that source's
+ * text, and it must be a single USD amount. A new price that fails any of these
+ * is not used, so a number the model remembered or took from another page cannot
+ * pull the suggested price down.
+ */
+export function groundNewPrice(
+  claim: ExtractedNewPrice | null | undefined,
+  sources: readonly Source[],
+): { price: number; url: string } | null {
+  if (!claim) return null;
+  const source = sources[claim.sourceIndex];
+  if (!source || !priceAppearsIn(source.text, claim.priceText)) return null;
+  const price = parsePriceText(claim.priceText);
+  return price === null ? null : { price, url: source.url };
 }
 
 const round2 = (value: number) => Math.round(value * 100) / 100;
@@ -230,7 +253,10 @@ export const rawListingSchema = z.object({
 export const appraisalInputSchema = z.object({
   item: itemFactsSchema,
   listings: z.array(rawListingSchema).max(40),
+  /** Grounded: only set when the page it came from showed this price. */
   newPrice: z.number().positive().nullable().default(null),
+  /** The page `newPrice` came from, so the card can link it. */
+  newPriceUrl: z.string().max(2000).nullable().default(null),
   position: z.enum(POSITIONS),
   positionEvidence: z.string().max(600),
 });
@@ -267,6 +293,8 @@ export type Appraisal = {
   gap: { amount: number; pct: number } | null;
   overpriced: boolean;
   newPrice: number | null;
+  /** Where the new price was read from. Null whenever `newPrice` is. */
+  newPriceUrl: string | null;
   position: Position;
   positionEvidence: string;
   /** The listings to show: those counted, then those shown dimmed. */
@@ -288,7 +316,9 @@ const ANCHOR_FOR: Record<Position, Suggested["anchor"]> = {
  * worse than saying so.
  */
 export function computeAppraisal(
-  input: Pick<AppraisalInput, "listings" | "newPrice" | "position" | "positionEvidence">,
+  input: Pick<AppraisalInput, "listings" | "newPrice" | "position" | "positionEvidence"> & {
+    newPriceUrl?: string | null;
+  },
   asking: number,
 ): Appraisal {
   const newPrice = input.newPrice ?? null;
@@ -369,6 +399,7 @@ export function computeAppraisal(
     gap: gapToMarket,
     overpriced: gapToMarket !== null && gapToMarket.pct >= OVERPRICED_AT,
     newPrice,
+    newPriceUrl: newPrice === null ? null : (input.newPriceUrl ?? null),
     position: input.position,
     positionEvidence: input.positionEvidence,
     listings: [...used, ...unverified],
@@ -388,7 +419,7 @@ export type AppraiseResponse = Appraisal & {
   queries: string[];
   /**
    * Which steps a backup model answered because Gemini could not, and which one.
-   * Empty normally. The card says so, since a backup cannot see photos.
+   * Empty normally. Sent for whoever is debugging; the screen does not show it.
    */
   backup: Array<{ step: "facts" | "reading"; provider: string }>;
 };
@@ -417,6 +448,29 @@ export function formatUsdWhole(value: number): string {
 export function formatPct(pct: number): string {
   const sign = pct > 0 ? "+" : pct < 0 ? "−" : "";
   return `${sign}${Math.abs(Math.round(pct * 100))}%`;
+}
+
+/**
+ * The takeaway the market card opens with: what the comparison says, in one
+ * sentence, before any of the evidence. The percentage is rounded and signed
+ * exactly as `formatPct` does it, so the title never disagrees with a figure
+ * shown elsewhere.
+ */
+export function marketHeadline({
+  asking,
+  gap: gapToMarket,
+  item,
+}: Pick<Appraisal, "asking" | "gap"> & { item: Pick<ItemFacts, "model"> }): string {
+  if (gapToMarket === null) {
+    return `Too few verified listings to price your ${item.model || "item"}`;
+  }
+  // Under half a percent rounds to "0%", which would read as a gap that is not
+  // there; say what it is instead.
+  if (Math.abs(gapToMarket.pct) < 0.005) {
+    return `Your ${formatUsd(asking)} is right at the market median`;
+  }
+  const size = formatPct(gapToMarket.pct).replace(/^[+−]/, "");
+  return `Your ${formatUsd(asking)} is ${size} ${gapToMarket.pct > 0 ? "above" : "below"} the market median`;
 }
 
 /**

@@ -29,7 +29,12 @@ import {
   type Appraisal,
   type Position,
 } from "./pricing";
-import { LISTING_CONDITIONS, type ExtractedListing, type Source } from "./sources";
+import {
+  LISTING_CONDITIONS,
+  type ExtractedListing,
+  type ExtractedNewPrice,
+  type Source,
+} from "./sources";
 import { stageInstruction, type Stage } from "./stages";
 
 /** Thrown when the model returns something that is not a usable appraisal step. */
@@ -188,11 +193,15 @@ export const EXTRACT_INSTRUCTION = [
   "Do not invent a listing and do not complete a partial one. Report fewer, or none, if that is all the sources contain.",
   "Mark a listing sold only when the text says that item was sold or went for that price. 'Sold out' on a shop page means the stock is gone, not that a buyer paid that price: mark it active.",
   "A range ('$272 to $320'), an average, a 'from $X' starting price and a 'regular price' or 'new' price are not listings: do not report them. Judge condition from the text; use unknown when it does not say.",
-  "newPrice is the typical price of the item new, in US dollars, only if a source states one; otherwise omit it.",
+  "newPrice is the price of the item new, only if a source states one: copy priceText exactly as it is written there, currency symbol included, and set sourceIndex to the n of that source. The app checks it against that source's text the same way as a listing and does not use one it cannot find there. Omit it otherwise.",
   "Then judge the seller's item against the listings. position is 'below' if it is clearly worse than the typical listing, 'above' if clearly better, otherwise 'typical'. positionEvidence quotes the specific facts about their item that justify it.",
 ].join(" ");
 
 export function extractionSchema(sourceCount: number) {
+  const sourceIndex = {
+    type: "integer",
+    enum: Array.from({ length: sourceCount }, (_, index) => index),
+  };
   return {
     type: "object",
     properties: {
@@ -211,10 +220,7 @@ export function extractionSchema(sourceCount: number) {
             kind: { type: "string", enum: ["sold", "active"] },
             condition: { type: "string", enum: [...LISTING_CONDITIONS] },
             platform: { type: "string" },
-            sourceIndex: {
-              type: "integer",
-              enum: Array.from({ length: sourceCount }, (_, index) => index),
-            },
+            sourceIndex,
           },
           required: ["title", "priceText", "kind", "condition", "platform", "sourceIndex"],
           propertyOrdering: [
@@ -228,8 +234,19 @@ export function extractionSchema(sourceCount: number) {
         },
       },
       newPrice: {
-        type: "number",
-        description: "Typical price new, in US dollars. Omit if no source gives one.",
+        type: "object",
+        description:
+          "The price of the item new, as a source states it. Omit if no source gives one.",
+        properties: {
+          priceText: {
+            type: "string",
+            description:
+              "The new price exactly as the source text writes it, currency included, e.g. '$699.99'.",
+          },
+          sourceIndex,
+        },
+        required: ["priceText", "sourceIndex"],
+        propertyOrdering: ["priceText", "sourceIndex"],
       },
       position: { type: "string", enum: [...POSITIONS] },
       positionEvidence: { type: "string" },
@@ -250,7 +267,16 @@ export const extractionResultSchema = z.object({
       sourceIndex: z.number().int().min(0),
     }),
   ),
-  newPrice: z.number().positive().nullish(),
+  // Optional, and an answer that does not fit is read as "none given" rather
+  // than failing the whole reading: a new price that cannot be used is already
+  // dropped as a ceiling, so a malformed one costs the same thing.
+  newPrice: z
+    .object({
+      priceText: z.string().max(80),
+      sourceIndex: z.number().int().min(0),
+    })
+    .nullish()
+    .catch(null),
   position: z.enum(POSITIONS),
   positionEvidence: z.string().max(600),
 });
@@ -294,7 +320,8 @@ export function parseFacts(text: string | undefined): ItemFacts {
 
 export type MarketReading = {
   listings: ExtractedListing[];
-  newPrice: number | null;
+  /** Not yet checked: `groundNewPrice` decides whether it can be used. */
+  newPrice: ExtractedNewPrice | null;
   position: Position;
   positionEvidence: string;
 };

@@ -46,6 +46,7 @@ import {
 } from "@/lib/item";
 import {
   computeAppraisal,
+  groundNewPrice,
   type AppraiseResponse,
   type AppraisalInput,
 } from "@/lib/pricing";
@@ -128,10 +129,15 @@ export async function POST(request: Request) {
       backup.push({ step: "reading", provider });
     });
 
+    // The new price is a ceiling on the suggestion, so it gets the same check a
+    // listing does; one the page did not show is left out rather than trusted.
+    const newPrice = groundNewPrice(reading.newPrice, sources);
+
     const raw: AppraisalInput = {
       item,
       listings: groundListings(reading.listings, sources),
-      newPrice: reading.newPrice,
+      newPrice: newPrice?.price ?? null,
+      newPriceUrl: newPrice?.url ?? null,
       position: reading.position,
       positionEvidence: reading.positionEvidence,
     };
