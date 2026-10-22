@@ -221,6 +221,115 @@ describe("the commit marker", () => {
   });
 });
 
+describe("a verdict-shaped reply outside the verdict", () => {
+  // Seen on a real deployment: the commit marker never came, so the screen kept
+  // the chat box, the person typed "maybe 50" into it, and the model answered
+  // with a full verdict, "recently sold listings on eBay" included, with no
+  // search behind it.
+  const FAKE_VERDICT = "## Suggested price\n$10. Your price of $50 is well above the market.";
+
+  const typedPrice = { ...base, message: "maybe 50" };
+
+  beforeEach(() => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  it("is never shown: the app's own line replaces it and hands over to the price box", async () => {
+    modelSays(FAKE_VERDICT);
+
+    const { events } = await postChat({
+      ...typedPrice,
+      transcript: conversation(FACT_COUNT),
+    });
+
+    const shown = texts(events);
+    expect(shown).not.toMatch(/Suggested price|\$10|well above/);
+    expect(shown).toMatch(/Enter your price in the box/);
+    expect(events).toContainEqual({ t: "stage", v: "commit" });
+  });
+
+  it("is caught however the model's chunks fall", async () => {
+    modelSays("##", " Sugg", "ested pri", "ce\n$10. Rest of it.");
+
+    const { events } = await postChat({
+      ...typedPrice,
+      transcript: conversation(FACT_COUNT),
+    });
+    expect(texts(events)).toMatch(/Enter your price in the box/);
+    expect(texts(events)).not.toMatch(/\$10/);
+  });
+
+  it("sends the person back to the questions when they have not all been asked", async () => {
+    modelSays(FAKE_VERDICT);
+
+    const { events } = await postChat({ ...typedPrice, transcript: conversation(1) });
+
+    expect(texts(events)).toMatch(/finish the questions first/);
+    expect(events.some((e) => e.t === "stage")).toBe(false);
+  });
+
+  it("is caught in the intake reply too", async () => {
+    modelSays(FAKE_VERDICT);
+
+    const { events } = await postChat({
+      ...base,
+      phase: "intake",
+      transcript: [],
+      message: "I'm selling: iPad",
+      messagePhotoIds: ["p1"],
+    });
+    expect(texts(events)).not.toMatch(/\$10/);
+    expect(texts(events)).toMatch(/finish the questions first/);
+  });
+
+  it("is never shown when the model reads its own instructions back instead", async () => {
+    modelSays("Protocol version: v2\n\n## What you are\n\nYou are a pricing assistant...");
+
+    // Early on there is nothing to hand over to: the person is only told to resend.
+    const early = await postChat({ ...typedPrice, transcript: conversation(1) });
+    expect(texts(early.events)).toMatch(/reply went wrong/);
+    expect(texts(early.events)).not.toMatch(/Protocol version|pricing assistant/);
+    expect(early.events.some((e) => e.t === "stage")).toBe(false);
+
+    // Once the questions are done they are sent to the price box, as for a fake verdict.
+    const ready = await postChat({ ...typedPrice, transcript: conversation(FACT_COUNT) });
+    expect(texts(ready.events)).toMatch(/Enter your price in the box/);
+    expect(texts(ready.events)).not.toMatch(/Protocol version|pricing assistant/);
+    expect(ready.events).toContainEqual({ t: "stage", v: "commit" });
+  });
+
+  it("does not touch a real verdict", async () => {
+    modelSays("## Suggested price\n$300.", "[[STAGE:complete]]");
+
+    const { events, status } = await postChat({
+      ...base,
+      phase: "verdict",
+      askingPrice: asking,
+      appraisal,
+      transcript: conversation(FACT_COUNT),
+      message: "what do you suggest?",
+    });
+
+    expect(status).toBe(200);
+    expect(texts(events)).toBe("## Suggested price\n$300.");
+    expect(events).toContainEqual({ t: "stage", v: "complete" });
+  });
+
+  it("leaves an ordinary reply alone, including one that mentions a suggested price later", async () => {
+    modelSays("Before I can give you a suggested price I need to know the condition.");
+
+    const { events } = await postChat(base);
+    expect(texts(events)).toBe(
+      "Before I can give you a suggested price I need to know the condition.",
+    );
+  });
+
+  it("leaves a very short reply alone", async () => {
+    modelSays("Noted.");
+    expect(texts((await postChat(base)).events)).toBe("Noted.");
+  });
+});
+
 describe("the verdict", () => {
   const verdictBody = {
     ...base,

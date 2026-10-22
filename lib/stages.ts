@@ -55,7 +55,7 @@ export const STAGE_INSTRUCTIONS: Record<Stage, string> = {
   intake:
     "You are in the INTAKE phase. They have told you what they are selling and attached photos. In one or two sentences say what you believe the item is from the photos and their description, and flag it if the two disagree. Then ask your first question in the same turn. Do not mention any price, value or market figure.",
   probe:
-    "You are in the PROBE phase. Ask one question per turn — one thing, never several joined together — until you have all four facts: the exact model or variant, what they paid and roughly when, how long they have used it, and its current condition checked against the photos. Follow up where an answer was thin or a photo contradicts it, and you may ask for another photo. Do not state any price, estimate or market figure, and do not name any bias. When all four are covered, say you have what you need and end that turn with the marker for the commit phase.",
+    "You are in the PROBE phase. Ask one question per turn — one thing, never several joined together — until you have all four facts: the exact model or variant, what they paid and roughly when, how long they have used it, and its current condition checked against the photos. Follow up where an answer was thin or a photo contradicts it, and you may ask for another photo. Do not state any price, estimate or market figure, and do not name any bias. When all four are covered, say you have what you need and end that turn with the marker for the commit phase. If they type a price, or ask what it is worth, do not weigh it up and never write the verdict's sections (Suggested price, Why this price, Where to sell, What would change this): there is no market data yet, so anything you wrote would be invented. Say in one line that they will set their price in the price box next, and if all four facts are covered end that turn with the marker for the commit phase.",
   commit:
     "They are locking in the price they would list it at, before seeing any market data. Acknowledge it in one line. Do not comment on the number and do not mention any other price.",
   appraise:
@@ -69,6 +69,40 @@ export const STAGE_INSTRUCTIONS: Record<Stage, string> = {
 export function stageInstruction(stage: Stage): string {
   return STAGE_INSTRUCTIONS[stage];
 }
+
+/**
+ * The verdict opens with its first section's heading, and nothing outside the
+ * verdict phase may. A reply that does is the model writing a verdict with no
+ * market behind it — which it will, if it is handed a price in the chat while the
+ * phase is still the questions — so the route replaces it instead of showing it.
+ *
+ * Anchored at the start on purpose: "before I suggest a price" in a question is
+ * not the heading, and a verdict that starts with a preamble is rare enough that
+ * holding more of every reply back to catch it would cost the questions their
+ * streaming.
+ */
+const VERDICT_OPENING = /^[\s#*_>-]*suggested price\b/i;
+
+export function opensLikeVerdict(text: string): boolean {
+  return VERDICT_OPENING.test(text);
+}
+
+/**
+ * The first line of every system instruction (`systemInstruction` in
+ * lib/prompts.ts). A reply that begins with it is the model reading its own
+ * instructions back to the person — seen once in three replays of a price typed
+ * into the chat — which the protocol forbids and the person must never see. Like
+ * the verdict check it only catches a reply that starts this way; a test ties it
+ * to the real first line so renaming one cannot silently disarm the other.
+ */
+const PROMPT_OPENING = /^[\s#*_>-]*protocol version\b/i;
+
+export function opensLikePrompt(text: string): boolean {
+  return PROMPT_OPENING.test(text);
+}
+
+/** How much of a non-verdict reply is held back before it can be judged. */
+export const VERDICT_CHECK_LENGTH = 24;
 
 /** What the server knows about a request, for deciding whether it is in order. */
 export type PhaseContext = {

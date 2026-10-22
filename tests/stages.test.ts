@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { systemInstruction } from "@/lib/prompts";
 import {
   FACT_COUNT,
   STAGES,
   STAGE_INSTRUCTIONS,
   STAGE_LABELS,
   canEnter,
+  opensLikePrompt,
+  opensLikeVerdict,
   type PhaseContext,
 } from "@/lib/stages";
 
@@ -84,5 +87,54 @@ describe("stage tables", () => {
     expect(STAGE_INSTRUCTIONS.intake).toMatch(/Do not mention any price/);
     expect(STAGE_INSTRUCTIONS.probe).toMatch(/Do not state any price/);
     expect(STAGE_INSTRUCTIONS.commit).toMatch(/do not mention any other price/);
+  });
+});
+
+describe("opensLikeVerdict", () => {
+  it.each([
+    "## Suggested price\n$10.",
+    "Suggested price: $10",
+    "**Suggested price**\n$10",
+    "  \n### suggested price\n$10",
+    "# SUGGESTED PRICE",
+  ])("recognises the verdict's opening heading: %j", (text) => {
+    expect(opensLikeVerdict(text)).toBe(true);
+  });
+
+  it.each([
+    "What did you pay for it?",
+    "Before I can give you a suggested price I need the condition.",
+    "Thanks. What is the battery health?",
+    "",
+  ])("lets an ordinary reply through: %j", (text) => {
+    expect(opensLikeVerdict(text)).toBe(false);
+  });
+
+  it("is told to the model in words too: a typed price is not weighed up", () => {
+    expect(STAGE_INSTRUCTIONS.probe).toMatch(/type a price/);
+    expect(STAGE_INSTRUCTIONS.probe).toMatch(/Suggested price, Why this price/);
+    expect(STAGE_INSTRUCTIONS.probe).toMatch(/price box/);
+  });
+});
+
+describe("opensLikePrompt", () => {
+  it("recognises the real first line of the system instruction", () => {
+    // Tied to the real thing, so renaming that line cannot silently disarm the check.
+    const instruction = systemInstruction("probe", { intake: { item: "iPad" }, photoCount: 1 });
+    expect(opensLikePrompt(instruction)).toBe(true);
+    expect(opensLikePrompt(instruction.slice(0, 80))).toBe(true);
+  });
+
+  it.each(["## Protocol version: v2", "**Protocol version** v2"])(
+    "recognises it dressed up as markdown: %j",
+    (text) => expect(opensLikePrompt(text)).toBe(true),
+  );
+
+  it.each([
+    "What did you pay for it?",
+    "Thanks. The protocol version of your iPad's firmware matters little here.",
+    "",
+  ])("lets an ordinary reply through: %j", (text) => {
+    expect(opensLikePrompt(text)).toBe(false);
   });
 });

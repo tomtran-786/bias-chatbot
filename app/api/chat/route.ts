@@ -40,7 +40,13 @@ import {
   photoSchema,
 } from "@/lib/item";
 import { appraisalInputSchema, computeAppraisal } from "@/lib/pricing";
-import { canEnter, type Stage } from "@/lib/stages";
+import {
+  VERDICT_CHECK_LENGTH,
+  canEnter,
+  opensLikePrompt,
+  opensLikeVerdict,
+  type Stage,
+} from "@/lib/stages";
 import { MarkerFilter } from "@/lib/stream";
 import {
   assistantTurns,
@@ -74,6 +80,18 @@ type Event =
   /** Told to the person when the backup model is the one answering. */
   | { t: "notice"; v: "backup_model"; provider: string }
   | { t: "error"; code: "rate_limited" | "model_overloaded" | "server_error" };
+
+/**
+ * What the person is told instead when a reply outside the verdict opens like one.
+ * Written by the app, so it can be trusted to say the right thing: the model has
+ * just shown it will answer a price typed into the chat as if it had a market.
+ */
+const TAKE_PRICE_IN_BOX =
+  "Thanks. Enter your price in the box below and lock it in, and I'll look up the market against it.";
+const REPLY_WENT_WRONG =
+  "Sorry, that reply went wrong. Please send your last message again.";
+const FINISH_QUESTIONS_FIRST =
+  "I can't weigh in on a price yet: I have no market data, and I'm still getting the details I need. Let's finish the questions first, then you'll set your price before I look anything up.";
 
 export async function POST(request: Request) {
   const parsed = bodySchema.safeParse(await request.json().catch(() => null));
@@ -173,14 +191,68 @@ export async function POST(request: Request) {
         },
       });
 
+      // Outside the verdict, the first few words are held until they can be
+      // judged: a reply that opens as a verdict is never shown (see
+      // `opensLikeVerdict`). After that the reply streams as before.
+      let judged = phase === "verdict";
+      let held = "";
+
       try {
         const onFallback = (provider: string) =>
           send({ t: "notice", v: "backup_model", provider });
+
+        /** What a held reply turned out to be, if it should not be shown. */
+        const driftOf = (text: string) =>
+          opensLikeVerdict(text) ? "verdict" : opensLikePrompt(text) ? "prompt" : null;
+        let drifted: "verdict" | "prompt" | null = null;
         for await (const chunk of streamReply(history, photos, phase, context, onFallback)) {
-          filter.push(chunk);
+          if (judged) {
+            filter.push(chunk);
+            continue;
+          }
+          held += chunk;
+          if (held.trim().length < VERDICT_CHECK_LENGTH) continue;
+          judged = true;
+          drifted = driftOf(held);
+          if (drifted) break;
+          filter.push(held);
         }
-        filter.end();
+        if (!judged && held) {
+          // A reply too short to have been judged mid-stream.
+          drifted = driftOf(held);
+          if (!drifted) filter.push(held);
+        }
+
+        if (drifted) {
+          console.warn(
+            `dropped a reply that ${drifted === "prompt" ? "began with the system prompt" : "was shaped like a verdict"} in the ${phase} phase`,
+          );
+          // Once the questions are done the next step is the price box whatever
+          // the model said, so that is where the person is sent. Before then the
+          // reply is replaced and nothing else changes.
+          const ready = canEnter("commit", {
+            ...phaseContext,
+            assistantTurns: phaseContext.assistantTurns + 1,
+          });
+          send({
+            t: "text",
+            v: ready.ok
+              ? TAKE_PRICE_IN_BOX
+              : drifted === "prompt"
+                ? REPLY_WENT_WRONG
+                : FINISH_QUESTIONS_FIRST,
+          });
+          if (ready.ok) send({ t: "stage", v: "commit" });
+        } else {
+          filter.end();
+        }
       } catch (error) {
+        // Whatever was generated before the failure still reaches the person,
+        // including the few words held back above.
+        if (!judged && held && !opensLikeVerdict(held) && !opensLikePrompt(held)) {
+          filter.push(held);
+        }
+
         // Classified by Gemini's error even when the backup failed too: that is
         // the failure the person ran into first, and the backup's is logged.
         const cause = primaryOf(error);

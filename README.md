@@ -308,6 +308,18 @@ It is not a security boundary: the person holding the conversation could post an
 payload they liked, and they are the person being helped, so that is fine. Worth
 being precise about rather than overclaiming.
 
+One drift is also caught on the way out. The protocol the model holds contains the
+verdict format, so a price typed into the chat while the phase is still the
+questions (the price box only appears once the model emits the commit marker, and
+the weaker fallback models sometimes do not) was answered with a full verdict that
+no market stood behind. Outside the verdict phase, `app/api/chat/route.ts` holds the
+first few words of each reply, and one that opens like a verdict (`opensLikeVerdict`)
+or begins with the system prompt (`opensLikePrompt`, which the weaker models also
+did when handed a price in the chat) is replaced by a line the app writes; once the
+questions are done that line sends the person to the price box. It only catches a
+reply that *starts* that way, and it is a net under the stage instruction rather
+than a substitute for it.
+
 ## Parameters
 
 | Variable | Default | Purpose |
