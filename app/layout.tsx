@@ -8,11 +8,22 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
+/**
+ * Applies a saved light/dark choice before the first paint, so it does not flash
+ * the system theme first. Runs as plain text in the head because React has not
+ * loaded yet; storage may be blocked, so it is allowed to do nothing.
+ */
+const APPLY_SAVED_THEME = `try{var t=localStorage.getItem("theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}`;
+
 export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en">
+    // data-theme is set by the script below before React hydrates.
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: APPLY_SAVED_THEME }} />
+      </head>
       <body className="antialiased">{children}</body>
     </html>
   );

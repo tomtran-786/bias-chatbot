@@ -6,6 +6,7 @@ import { MarketCard } from "@/components/MarketCard";
 import { PhotoPicker, Thumb } from "@/components/PhotoPicker";
 import { PriceGate } from "@/components/PriceGate";
 import { Prose } from "@/components/Prose";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import {
   MAX_PHOTOS,
   type AskingPrice,
@@ -477,13 +478,14 @@ export function Conversation() {
     <div className="flex h-dvh flex-col">
       <header className="shrink-0 border-b border-rule bg-surface/80 backdrop-blur">
         <div className="mx-auto flex w-full max-w-2xl flex-col gap-3 px-5 py-3">
-          <div className="flex items-baseline justify-between gap-4">
+          <div className="flex items-center justify-between gap-4">
             <h1 className="text-sm font-semibold tracking-tight">
               Resale price assistant
             </h1>
-            <p className="text-xs text-ink-muted">
-              {STAGE_LABELS[phase]}
-            </p>
+            <div className="flex items-center gap-3">
+              <p className="text-xs text-ink-muted">{STAGE_LABELS[phase]}</p>
+              <ThemeToggle />
+            </div>
           </div>
           {intake ? (
             <ol className="flex gap-1.5" aria-label="Progress">
