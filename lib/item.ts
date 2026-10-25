@@ -9,6 +9,8 @@
  * instrument. Treat it the way you would treat a protocol edit.
  */
 import { z } from "zod";
+import { DEFAULT_VND_PER_USD, scrubVnd, vndToUsd } from "./currency";
+import { SEARCH_DOMAINS_US, SEARCH_DOMAINS_VN } from "./sources";
 
 /** Photos the intake form accepts. More can be added during the questions. */
 export const INTAKE_MAX_PHOTOS = 4;
@@ -176,26 +178,68 @@ export type ItemFacts = {
   included: string[];
   /** Wear and damage, from their words or the photos. */
   defects: string[];
-  /** What they paid, in USD. */
+  /** What they paid, in USD (converted from đồng in code when they said it in đồng). */
   purchasePrice: number | null;
+};
+
+/**
+ * The facts as the model returns them. The detail fields fall back to "unknown"
+ * instead of failing the lookup: a purchase price the model got wrong, or an age
+ * it wrote as text, must not make every retry fail the same way. Only the model
+ * and the condition are required, because without them there is nothing to price.
+ */
+const optionalFacts = {
+  variant: z.string().trim().max(200).nullable().default(null).catch(null),
+  ageMonths: z.number().min(0).max(1200).nullable().default(null).catch(null),
+  included: z.array(z.string().trim().max(200)).max(20).default([]).catch([]),
+  defects: z.array(z.string().trim().max(300)).max(20).default([]).catch([]),
 };
 
 export const itemFactsSchema = z.object({
   searchQuery: z.string().trim().max(200),
   model: z.string().trim().max(200),
-  variant: z.string().trim().max(200).nullable().default(null),
-  ageMonths: z.number().min(0).max(1200).nullable().default(null),
   condition: z.enum(ITEM_CONDITIONS),
-  included: z.array(z.string().trim().max(200)).max(20).default([]),
-  defects: z.array(z.string().trim().max(300)).max(20).default([]),
-  purchasePrice: z.number().min(0).max(MAX_ASKING_USD).nullable().default(null),
+  ...optionalFacts,
+  purchasePrice: z.number().min(0).max(MAX_ASKING_USD).nullable().default(null).catch(null),
 });
+
+export const PURCHASE_CURRENCIES = ["USD", "VND"] as const;
+
+/**
+ * What the facts call returns: `itemFactsSchema` with the price in whatever
+ * currency they named it in. Turned into dollars by `toItemFacts`, in code, since a
+ * model asked to convert "15 triệu" will round it, drop a zero or refuse.
+ */
+export const factsAnswerSchema = z.object({
+  searchQuery: z.string().trim().max(200),
+  model: z.string().trim().max(200),
+  condition: z.enum(ITEM_CONDITIONS),
+  ...optionalFacts,
+  purchasePrice: z.number().min(0).nullable().default(null).catch(null),
+  purchaseCurrency: z.enum(PURCHASE_CURRENCIES).nullable().default("USD").catch("USD"),
+});
+
+/** The answer as `ItemFacts`, with a price in đồng converted at `vndPerUsd`. */
+export function toItemFacts(
+  answer: z.output<typeof factsAnswerSchema>,
+  vndPerUsd: number = DEFAULT_VND_PER_USD,
+): ItemFacts {
+  const { purchaseCurrency, purchasePrice, ...rest } = answer;
+  let usd: number | null = purchasePrice;
+  if (purchasePrice !== null && purchaseCurrency === "VND") {
+    // Below a few thousand đồng it is shorthand ("15" for 15 triệu), not a price.
+    usd = purchasePrice >= 10_000 ? vndToUsd(purchasePrice, vndPerUsd) : null;
+  }
+  return { ...rest, purchasePrice: usd !== null && usd <= MAX_ASKING_USD ? usd : null };
+}
 
 const CURRENCY_AMOUNT = /(?:US\s?)?\$\s?\d[\d,]*(?:\.\d+)?|\b\d[\d,]*(?:\.\d+)?\s?(?:usd|dollars?|bucks)\b/gi;
 
-/** Removes anything that reads as a dollar amount from free text. */
+/** Removes anything that reads as a dollar or đồng amount from free text. */
 export function scrubPrices(text: string): string {
-  return text.replace(CURRENCY_AMOUNT, "").replace(/\s{2,}/g, " ").trim();
+  return scrubVnd(text.replace(CURRENCY_AMOUNT, ""))
+    .replace(/\s{2,}/g, " ")
+    .trim();
 }
 
 /**
@@ -219,31 +263,58 @@ export function forSearch(facts: ItemFacts): Omit<ItemFacts, "purchasePrice"> {
   };
 }
 
-/** How many queries one appraisal runs. Budgeted up front, so a fixed number. */
-export const QUERY_COUNT = 2;
+/** A search to run: the words, and the sites to look on (none means anywhere). */
+export type SearchQuery = { query: string; domains: string[] };
+
+/** The most queries one lookup runs: two US, one Vietnamese, one widening. Budgeted by those actually run. */
+export const MAX_QUERIES = 4;
+
+/** Below this many sources carrying a price, the search is widened once. */
+export const WIDEN_BELOW = 6;
+
+/**
+ * What to type into a search box: `searchQuery` leads because it is the one field
+ * the extraction was asked to write for exactly this purpose (brand, model, size,
+ * no adjectives); the model and variant are the fallback if it came back empty.
+ */
+export function searchName(
+  facts: Pick<ItemFacts, "searchQuery" | "model" | "variant">,
+): string {
+  return (facts.searchQuery || [facts.model, facts.variant].filter(Boolean).join(" "))
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 150);
+}
 
 /**
  * The search queries, built by code rather than by the model.
  *
  * Taking `forSearch`'s output makes it a type error to pass the raw facts, so a
  * purchase price cannot reach a query by way of this function. The wording is
- * fixed: one query aimed at sold prices and one at listings for sale, because
- * the two answer different questions and the pricing step prefers sold.
- *
- * `searchQuery` leads because it is the one field the extraction was asked to
- * write for exactly this purpose (brand, model, size, no adjectives); the model
- * and variant are the fallback if it came back empty.
+ * fixed: US queries aimed at sold prices and at listings for sale, because the two
+ * answer different questions and the pricing step prefers sold, and one Vietnamese
+ * query aimed at the Vietnamese marketplaces.
  */
 export function searchQueries(
   facts: Pick<ReturnType<typeof forSearch>, "searchQuery" | "model" | "variant">,
-): string[] {
-  const name = (
-    facts.searchQuery || [facts.model, facts.variant].filter(Boolean).join(" ")
-  )
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 150);
-  return [`${name} used sold price`, `${name} used for sale`];
+): SearchQuery[] {
+  const name = searchName(facts);
+  return [
+    { query: `${name} used sold price`, domains: SEARCH_DOMAINS_US },
+    { query: `${name} used for sale`, domains: SEARCH_DOMAINS_US },
+    { query: `${name} cũ`, domains: SEARCH_DOMAINS_VN },
+  ];
+}
+
+/**
+ * The one extra query when the first round found little: the model alone, without
+ * the storage or colour that may have narrowed it too far, and on any site.
+ */
+export function wideningQuery(
+  facts: Pick<ReturnType<typeof forSearch>, "searchQuery" | "model" | "variant">,
+): SearchQuery {
+  const model = facts.model.replace(/\s+/g, " ").trim();
+  return { query: `${model || searchName(facts)} used price`, domains: [] };
 }
 
 /**

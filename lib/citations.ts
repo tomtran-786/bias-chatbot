@@ -12,6 +12,7 @@
  *
  * Pure, and free of `server-only`: the cards and the verdict strip both use it.
  */
+import { isVndText } from "./currency";
 import type { Appraisal, PlatformSummary, PricedListing } from "./pricing";
 
 export type CitedListing = {
@@ -52,6 +53,24 @@ export function hostLabel(url: string | null | undefined): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * The price as the page wrote it, when it was not written in dollars ("5.500.000 ₫"),
+ * so the card can show it beside the converted figure. Null for a dollar price.
+ */
+export function originalPrice(listing: Pick<PricedListing, "priceText">): string | null {
+  return isVndText(listing.priceText) ? listing.priceText.trim() : null;
+}
+
+/** One line on the conversion, when any listing shown was priced in đồng; otherwise null. */
+export function conversionNote(
+  appraisal: Pick<Appraisal, "listings"> & { raw: { vndPerUsd: number } },
+): string | null {
+  const shown = appraisal.listings.some((listing) => originalPrice(listing) !== null);
+  return shown
+    ? `VND converted at 1 USD = ${appraisal.raw.vndPerUsd.toLocaleString("en-US")} ₫.`
+    : null;
 }
 
 export function citeListings(

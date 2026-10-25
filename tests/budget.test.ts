@@ -88,17 +88,17 @@ describe("the limits", () => {
     expect(() => spend([["search", 1]])).toThrow(BudgetExhaustedError);
   });
 
-  it("default to 40 searches and 300 model calls", () => {
+  it("default to 80 searches and 300 model calls", () => {
     delete process.env.DAILY_SEARCH_BUDGET;
     delete process.env.DAILY_MODEL_BUDGET;
-    expect(remaining("search")).toBe(40);
+    expect(remaining("search")).toBe(80);
     expect(remaining("model")).toBe(300);
   });
 
   it("fall back to the default for a value that is not a positive integer, instead of switching the limit off", () => {
     for (const bad of ["abc", "0", "-3", "1.5", ""]) {
       process.env.DAILY_SEARCH_BUDGET = bad;
-      expect(remaining("search")).toBe(40);
+      expect(remaining("search")).toBe(80);
     }
   });
 });

@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  EXTRACT_INSTRUCTION,
+  FACTS_SCHEMA,
+  MARKER_RULE,
   MalformedAppraisalError,
   extractionSchema,
+  parseFacts,
   parseJson,
   parseReading,
+  systemInstruction,
   unwrapJson,
 } from "@/lib/prompts";
 
@@ -80,5 +85,73 @@ describe("the new price in a reading", () => {
     const { properties } = extractionSchema(3);
     expect(properties.newPrice.properties.sourceIndex.enum).toEqual([0, 1, 2]);
     expect(properties.newPrice.required).toEqual(["priceText", "sourceIndex"]);
+  });
+});
+
+describe("the marker rule", () => {
+  it("lets the commit marker come at the first reply, when they have already said everything", () => {
+    expect(MARKER_RULE).toMatch(/commit marker may end your very first reply/);
+    expect(MARKER_RULE).not.toMatch(/never in the same turn that a phase began/);
+  });
+
+  it("still never has the assistant emit more than the two markers", () => {
+    expect(MARKER_RULE).toMatch(/only markers you ever emit/);
+    expect(MARKER_RULE).toMatch(/at most one per turn/);
+  });
+});
+
+describe("a locked price in the system instruction", () => {
+  const context = { intake: { item: "iPhone 13" }, photoCount: 1 };
+
+  it("is stated when it is locked, without a number, and points at the lookup button", () => {
+    const text = systemInstruction("probe", { ...context, priceLocked: true });
+    expect(text).toMatch(/already locked in/);
+    expect(text).toMatch(/You are not told what it is/);
+    expect(text).toMatch(/Do not ask for a price/);
+    expect(text).toMatch(/Look up the market/);
+    expect(text).not.toMatch(/\$\d/);
+  });
+
+  it("is absent otherwise, so the questions are exactly what they were", () => {
+    expect(systemInstruction("probe", context)).not.toMatch(/already locked in/);
+    expect(systemInstruction("probe", { ...context, priceLocked: false })).not.toMatch(/locked in/);
+  });
+});
+
+describe("the facts", () => {
+  it("asks for the price in the currency it was said in, as a full number", () => {
+    expect(FACTS_SCHEMA.properties.purchaseCurrency.enum).toEqual(["USD", "VND"]);
+    expect(FACTS_SCHEMA.properties.purchasePrice.description).toMatch(/never converted/);
+    expect(FACTS_SCHEMA.properties.purchasePrice.description).toMatch(/15000000/);
+  });
+
+  it("are converted by the app, at the rate it is given", () => {
+    const facts = parseFacts(
+      JSON.stringify({
+        searchQuery: "iPhone 13",
+        model: "iPhone 13",
+        condition: "good",
+        purchasePrice: 13_000_000,
+        purchaseCurrency: "VND",
+      }),
+      26_000,
+    );
+    expect(facts.purchasePrice).toBe(500);
+    expect(facts).not.toHaveProperty("purchaseCurrency");
+  });
+
+  it("do not fail over a detail field, but do over the model's absence", () => {
+    expect(parseFacts('{"searchQuery":"x","model":"x","condition":"good","ageMonths":"long"}').ageMonths).toBeNull();
+    expect(() => parseFacts('{"searchQuery":"x","condition":"good"}')).toThrow(MalformedAppraisalError);
+  });
+});
+
+describe("reading listings in đồng", () => {
+  it("is told to copy the price as written, to leave Shopee's 'sold' count alone and to keep to used items", () => {
+    expect(EXTRACT_INSTRUCTION).toMatch(/Chợ Tốt, Shopee and Lazada/);
+    expect(EXTRACT_INSTRUCTION).toMatch(/5\.500\.000 ₫/);
+    expect(EXTRACT_INSTRUCTION).toMatch(/Đã bán 1,2k/);
+    expect(EXTRACT_INSTRUCTION).toMatch(/mark those listings active/);
+    expect(EXTRACT_INSTRUCTION).toMatch(/only if it is a used or second-hand item/);
   });
 });

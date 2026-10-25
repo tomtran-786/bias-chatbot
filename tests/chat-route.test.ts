@@ -167,18 +167,37 @@ describe("streaming", () => {
   });
 });
 
-describe("the commit marker", () => {
-  it("is dropped while too few questions have been asked", async () => {
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    modelSays("I think I have enough.[[STAGE:commit]]");
-
-    // Two questions so far; this reply is the third.
-    const early = await postChat({ ...base, transcript: conversation(2) });
-    expect(early.events.some((e) => e.t === "stage")).toBe(false);
-    expect(texts(early.events)).toBe("I think I have enough.");
+describe("a locked price", () => {
+  it("is told to the assistant as a fact, never as a number", async () => {
+    await postChat({ ...base, priceLocked: true, transcript: conversation(FACT_COUNT) });
+    const [, , , context] = streamReply.mock.calls[0];
+    expect(context.priceLocked).toBe(true);
+    expect(JSON.stringify(context)).not.toMatch(/450/);
   });
 
-  it("goes through once the reply completes the questions", async () => {
+  it("is not claimed when the person has not locked one", async () => {
+    await postChat(base);
+    const [, , , context] = streamReply.mock.calls[0];
+    expect(context.priceLocked).toBeUndefined();
+  });
+});
+
+describe("the commit marker", () => {
+  it("is honoured at the very first reply: the assistant decides when it has the facts", async () => {
+    modelSays("You have told me everything I need.[[STAGE:commit]]");
+
+    const { events } = await postChat({
+      ...base,
+      phase: "intake",
+      transcript: [],
+      message: "I'm selling: iPhone 13 128GB, bought for $800 in March 2023, used two years, light scratches",
+      messagePhotoIds: ["p1"],
+    });
+    expect(events).toContainEqual({ t: "stage", v: "commit" });
+    expect(texts(events)).toBe("You have told me everything I need.");
+  });
+
+  it("goes through after the usual number of questions too", async () => {
     modelSays("That is all I need.[[STAGE:commit]]");
 
     // Three so far; this reply is the fourth.
@@ -257,6 +276,20 @@ describe("a verdict-shaped reply outside the verdict", () => {
     });
     expect(texts(events)).toMatch(/Enter your price in the box/);
     expect(texts(events)).not.toMatch(/\$10/);
+  });
+
+  it("sends the person to the lookup button, not the price box, when the price is already locked", async () => {
+    modelSays(FAKE_VERDICT);
+
+    const { events } = await postChat({
+      ...typedPrice,
+      transcript: conversation(FACT_COUNT),
+      priceLocked: true,
+    });
+
+    expect(texts(events)).toMatch(/locked in — press Look up the market/);
+    expect(texts(events)).not.toMatch(/Enter your price in the box/);
+    expect(events.some((e) => e.t === "stage")).toBe(false);
   });
 
   it("sends the person back to the questions when they have not all been asked", async () => {

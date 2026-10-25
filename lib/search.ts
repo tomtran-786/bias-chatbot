@@ -8,18 +8,21 @@
  * the model's free tier (no tool, so no tool quota) and keeps the one external
  * paid-by-the-call service behind a single function that can be counted.
  *
- * No retries, anywhere. A failed call is reported once and the request ends; a
- * retry loop is how a transient error turns into a burned quota.
+ * The queries run at once, and a search that fails for a reason that may pass (a
+ * timeout, a 5xx, a network error) is tried once more. Nothing else is retried: a
+ * refused key, an empty quota and a rate limit would only be refused again, and
+ * asking again is how a transient error turns into a burned quota.
  *
  * Plain `fetch`, no SDK: it is one POST.
  */
 import "server-only";
 import { z } from "zod";
 import { env } from "./env";
-import { SEARCH_DOMAINS, type SearchHit } from "./sources";
+import type { SearchQuery } from "./item";
+import type { SearchHit } from "./sources";
 
 const ENDPOINT = "https://api.tavily.com/search";
-const TIMEOUT_MS = 15_000;
+const TIMEOUT_MS = 10_000;
 const MAX_RESULTS = 10;
 
 /** Out of credits for the plan (432), or past the pay-as-you-go cap (433). */
@@ -86,7 +89,7 @@ export type SearchOptions = {
 
 /** One search. Throws one of the error classes above, never anything else. */
 async function searchOnce(
-  query: string,
+  { query, domains }: SearchQuery,
   { rawContent = "markdown", fetchImpl = fetch }: SearchOptions,
 ): Promise<{ results: SearchHit[]; credits: number | null }> {
   let key: string;
@@ -111,7 +114,7 @@ async function searchOnce(
         // "basic" is one credit; "advanced" is two and not needed to read prices.
         search_depth: "basic",
         max_results: MAX_RESULTS,
-        include_domains: SEARCH_DOMAINS,
+        ...(domains.length > 0 ? { include_domains: domains } : {}),
         include_raw_content: rawContent,
         include_usage: true,
       }),
@@ -162,33 +165,65 @@ function keyOf(url: string): string {
   }
 }
 
+/** One search, and one more try if it failed in a way that may pass. */
+async function searchWithRetry(
+  query: SearchQuery,
+  options: SearchOptions,
+): Promise<{ results: SearchHit[]; credits: number | null }> {
+  try {
+    return await searchOnce(query, options);
+  } catch (error) {
+    if (!(error instanceof SearchFailedError)) throw error;
+    return searchOnce(query, options);
+  }
+}
+
+/** Merges results, first sighting of a URL winning. */
+export function mergeHits(...lists: ReadonlyArray<readonly SearchHit[]>): SearchHit[] {
+  const seen = new Set<string>();
+  const merged: SearchHit[] = [];
+  for (const hit of lists.flat()) {
+    const key = keyOf(hit.url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(hit);
+  }
+  return merged;
+}
+
 /**
- * Runs each query in turn and merges the results, first sighting of a URL
- * winning.
+ * Runs the queries at once and merges the results, in query order.
  *
- * In turn rather than at once so that a failure stops the rest: if the first
- * query is refused for quota there is no reason to spend a credit finding out the
- * second would be too.
+ * One query failing does not lose the others: a lookup that found listings on
+ * three of four searches is better than none. It fails only when every query did,
+ * with the error that is most worth acting on (a quota before a rate limit before
+ * a plain failure).
  */
 export async function searchListings(
-  queries: readonly string[],
+  queries: readonly SearchQuery[],
   options: SearchOptions = {},
 ): Promise<SearchOutput> {
-  const seen = new Set<string>();
-  const results: SearchHit[] = [];
-  let credits: number | null = null;
+  const settled = await Promise.allSettled(queries.map((query) => searchWithRetry(query, options)));
 
-  for (const query of queries) {
-    const out = await searchOnce(query, options);
-    if (out.credits !== null) credits = (credits ?? 0) + out.credits;
-
-    for (const hit of out.results) {
-      const key = keyOf(hit.url);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      results.push(hit);
+  const answered = settled.flatMap((outcome) => (outcome.status === "fulfilled" ? [outcome.value] : []));
+  if (answered.length === 0) {
+    const errors = settled.flatMap((outcome) => (outcome.status === "rejected" ? [outcome.reason] : []));
+    const priority = [SearchQuotaError, SearchUnavailableError, SearchRateLimitError];
+    for (const kind of priority) {
+      const match = errors.find((error) => error instanceof kind);
+      if (match) throw match;
     }
+    throw errors[0] ?? new SearchFailedError("No search was run");
   }
 
-  return { results, queries: [...queries], credits };
+  const credits = answered.reduce<number | null>(
+    (sum, out) => (out.credits === null ? sum : (sum ?? 0) + out.credits),
+    null,
+  );
+  return {
+    results: mergeHits(...answered.map((out) => out.results)),
+    // Only the searches that came back: the card lists what was actually looked up.
+    queries: queries.filter((_, index) => settled[index].status === "fulfilled").map((q) => q.query),
+    credits,
+  };
 }

@@ -16,7 +16,7 @@ vi.mock("@google/genai", async (importOriginal) => {
   return { ...actual, GoogleGenAI: FakeGoogleGenAI };
 });
 
-const { ApiError } = await import("@google/genai");
+const { ApiError, ThinkingLevel } = await import("@google/genai");
 const {
   MalformedAppraisalError,
   ModelNotFoundError,
@@ -145,11 +145,50 @@ describe("trying the next model", () => {
   });
 });
 
-describe("what does not move on", () => {
-  it("a timeout: it has used its time, and a second attempt would not fit in the request", async () => {
-    answers({ [PRIMARY]: Object.assign(new Error("aborted"), { name: "TimeoutError" }) });
+const timedOut = () => Object.assign(new Error("aborted"), { name: "TimeoutError" });
+
+describe("a call that went wrong without being refused", () => {
+  it("a timeout moves on: the next model is not the one that is hanging", async () => {
+    answers({ [PRIMARY]: timedOut() });
+    const out = await extractFacts(transcript, photos, intake);
+    expect(out.model).toBe("x");
+    expect(modelsAsked()).toEqual([PRIMARY, SECOND]);
+  });
+
+  it("a timeout is remembered, so the next call does not open with the slow model", async () => {
+    answers({ [PRIMARY]: timedOut() });
+    await extractFacts(transcript, photos, intake);
+    expect(isCoolingDown(PRIMARY)).toBe(true);
+  });
+
+  it("reports a timeout when every model timed out", async () => {
+    answers({ [PRIMARY]: timedOut(), [SECOND]: timedOut(), [THIRD]: timedOut() });
     await expect(extractFacts(transcript, photos, intake)).rejects.toBeInstanceOf(ModelTimeoutError);
-    expect(modelsAsked()).toEqual([PRIMARY]);
+    expect(modelsAsked()).toEqual([PRIMARY, SECOND, THIRD]);
+  });
+
+  it("an answer that is not the schema moves on too, for facts and for listings", async () => {
+    answers({ [PRIMARY]: "this is not json" });
+    expect((await extractFacts(transcript, photos, intake)).model).toBe("x");
+    expect(modelsAsked()).toEqual([PRIMARY, SECOND]);
+
+    generateContent.mockReset();
+    answers({ [PRIMARY]: '{"listings":"none"}' }, READING_JSON);
+    await readListings(facts, sources);
+    expect(modelsAsked()).toEqual([PRIMARY, SECOND]);
+  });
+
+  it("is not remembered against a model that answered badly: that says nothing about its health", async () => {
+    answers({ [PRIMARY]: "this is not json" });
+    await extractFacts(transcript, photos, intake);
+    expect(isCoolingDown(PRIMARY)).toBe(false);
+  });
+
+  it("reports the bad answer, not a vague failure, when every model gave one", async () => {
+    answers({}, "this is not json");
+    const error = await extractFacts(transcript, photos, intake).catch((e) => e);
+    expect(error).toBeInstanceOf(MalformedAppraisalError);
+    expect(modelsAsked()).toEqual([PRIMARY, SECOND, THIRD]);
   });
 
   it("a bad request or a server fault: not about which model", async () => {
@@ -160,11 +199,48 @@ describe("what does not move on", () => {
       expect(modelsAsked()).toEqual([PRIMARY]);
     }
   });
+});
 
-  it("an answer that was received but is wrong: another model would not hide a prompt problem", async () => {
-    answers({ [PRIMARY]: "this is not json" });
-    await expect(extractFacts(transcript, photos, intake)).rejects.toBeInstanceOf(MalformedAppraisalError);
-    expect(modelsAsked()).toEqual([PRIMARY]);
+describe("thinking", () => {
+  const levels = () =>
+    generateContent.mock.calls.map(([request]) => request.config.thinkingConfig?.thinkingLevel);
+
+  it("is kept low for the facts and for reading listings", async () => {
+    answers({});
+    await extractFacts(transcript, photos, intake);
+    answers({}, READING_JSON);
+    await readListings(facts, sources);
+    expect(levels()).toEqual([ThinkingLevel.LOW, ThinkingLevel.LOW]);
+  });
+
+  it("is kept low for a streamed reply", async () => {
+    generateContentStream.mockImplementation(async () => says("ok"));
+    await collect(streamReply(transcript, photos, "probe", context));
+    expect(generateContentStream.mock.calls[0][0].config.thinkingConfig).toEqual({
+      thinkingLevel: ThinkingLevel.LOW,
+    });
+  });
+
+  it("is dropped for a model that answers 400 to it, and not asked of that model again", async () => {
+    generateContent.mockImplementation(async (request: { config: { thinkingConfig?: unknown } }) => {
+      if (request.config.thinkingConfig) {
+        throw new ApiError({ message: "Thinking level is not supported for this model", status: 400 });
+      }
+      return { text: FACTS_JSON };
+    });
+    expect((await extractFacts(transcript, photos, intake)).model).toBe("x");
+    expect(levels()).toEqual([ThinkingLevel.LOW, undefined]);
+    expect(modelsAsked()).toEqual([PRIMARY, PRIMARY]);
+
+    generateContent.mockClear();
+    await extractFacts(transcript, photos, intake);
+    expect(levels()).toEqual([undefined]);
+  });
+
+  it("does not hide any other 400", async () => {
+    answers({ [PRIMARY]: refuse(400) });
+    await expect(extractFacts(transcript, photos, intake)).rejects.toBeInstanceOf(ApiError);
+    expect(generateContent).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -309,12 +385,12 @@ describe("a streamed reply", () => {
     expect(error.tried).toEqual([PRIMARY, SECOND, THIRD]);
   });
 
-  it("does not move on for a timeout", async () => {
+  it("moves on for a timeout before the reply began, and reports it when all of them timed out", async () => {
     generateContentStream.mockImplementation(async () => {
-      throw Object.assign(new Error("aborted"), { name: "TimeoutError" });
+      throw timedOut();
     });
     await expect(collect(streamReply(transcript, photos, "probe", context))).rejects.toBeInstanceOf(ModelTimeoutError);
-    expect(generateContentStream).toHaveBeenCalledTimes(1);
+    expect(generateContentStream).toHaveBeenCalledTimes(3);
   });
 });
 

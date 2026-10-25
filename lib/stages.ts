@@ -36,8 +36,13 @@ export function isStage(value: string): value is Stage {
 /**
  * The facts the assistant has to cover before the price is asked for: which
  * model, what was paid and when, how long it has been used, and the condition
- * as shown in the photos. One question each, and the opener already asks the
- * first, so this is also the number of assistant turns needed.
+ * as shown in the photos. One question each at most, and the opener already asks
+ * the first.
+ *
+ * It is no longer a count the gate enforces: the assistant decides when it has all
+ * four, which may be after one reply if the person gave them in their description.
+ * It is how many replies in the person is offered the button for setting their price
+ * themselves, in case the assistant forgets to say it is done.
  */
 export const FACT_COUNT = 4;
 
@@ -53,9 +58,9 @@ export const STAGE_LABELS: Record<Stage, string> = {
 
 export const STAGE_INSTRUCTIONS: Record<Stage, string> = {
   intake:
-    "You are in the INTAKE phase. They have told you what they are selling and attached photos. In one or two sentences say what you believe the item is from the photos and their description, and flag it if the two disagree. Then ask your first question in the same turn. Do not mention any price, value or market figure.",
+    "You are in the INTAKE phase. They have told you what they are selling and attached photos. In one or two sentences say what you believe the item is from the photos and their description, and flag it if the two disagree. Then, before you ask anything, check everything they have already told you, description included, against the four facts: the exact model or variant, what they paid and roughly when, how long they have used it, and its current condition checked against the photos. Ask your first question only about a fact that is still missing or that a photo contradicts, in the same turn. If all four are already covered, say so in one short line and end that turn with the marker for the commit phase instead of asking anything. Do not mention any price, value or market figure.",
   probe:
-    "You are in the PROBE phase. Ask one question per turn — one thing, never several joined together — until you have all four facts: the exact model or variant, what they paid and roughly when, how long they have used it, and its current condition checked against the photos. Follow up where an answer was thin or a photo contradicts it, and you may ask for another photo. Do not state any price, estimate or market figure, and do not name any bias. When all four are covered, say you have what you need and end that turn with the marker for the commit phase. If they type a price, or ask what it is worth, do not weigh it up and never write the verdict's sections (Suggested price, Why this price, Where to sell, What would change this): there is no market data yet, so anything you wrote would be invented. Say in one line that they will set their price in the price box next, and if all four facts are covered end that turn with the marker for the commit phase.",
+    "You are in the PROBE phase. Before each question, check the whole conversation, the first description included, against the four facts: the exact model or variant, what they paid and roughly when, how long they have used it, and its current condition checked against the photos. Ask one question per turn, about one fact that is still missing or that a photo contradicts, never several joined together. Never ask for a fact they have already answered and never repeat back their description of the item. What they paid is the second fact: if they give an amount, even with a currency, it is what they paid and not a price they want to sell at. Note it in a few words and go on to the next missing fact. Follow up where an answer was thin or a photo contradicts it, and you may ask for another photo. Do not state any price, estimate or market figure, and do not name any bias. When all four are covered, say in one short line that you have what you need and end that turn with the marker for the commit phase. Only if they say what they want to sell it for, or ask what it is worth, do not weigh it up and never write the verdict's sections (Suggested price, Why this price, Where to sell, What would change this): there is no market data yet, so anything you wrote would be invented. In that case say in one line that they will set their price in the price box once the questions are done, and if all four facts are covered end that turn with the marker for the commit phase.",
   commit:
     "They are locking in the price they would list it at, before seeing any market data. Acknowledge it in one line. Do not comment on the number and do not mention any other price.",
   appraise:
@@ -116,15 +121,34 @@ export type PhaseContext = {
 
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
-/** The two checks that both the commit and appraise gates share. */
-function readyToPrice(context: PhaseContext): string | null {
-  if (context.assistantTurns < FACT_COUNT) {
-    return `The assistant must ask at least ${FACT_COUNT} questions — one per fact it needs — before a price can be recorded. It has asked ${context.assistantTurns}.`;
+/**
+ * What must be true before a price can be recorded or the market looked up: the
+ * assistant has spoken at least once (a reply that is still being written counts,
+ * so the caller adds it) and has a photo to check the condition against. How many
+ * facts it has is the assistant's call, not a count; `facts` in the market route
+ * is the safety net if it called it too early.
+ *
+ * Shared by the commit and appraise gates and the market route, which needs no
+ * price: no market step is ever shown one.
+ */
+export function readyToPrice(context: PhaseContext): string | null {
+  if (context.assistantTurns < 1) {
+    return "The assistant has not spoken yet, so there is nothing for a price to follow.";
   }
   if (context.photoCount < 1) {
     return "There is no photo yet. The assistant needs at least one to check the condition against.";
   }
   return null;
+}
+
+/**
+ * Whether the questions have run their course by count, for the places that offer
+ * the price box on the person's own say-so: the "ready to set my price" button, and
+ * the page a reply that drifted into a verdict sends them to. An assistant that
+ * emits the commit marker earlier is believed; these two are not that.
+ */
+export function askedEnough(context: PhaseContext): boolean {
+  return context.assistantTurns >= FACT_COUNT && readyToPrice(context) === null;
 }
 
 /**

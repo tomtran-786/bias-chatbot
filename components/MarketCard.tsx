@@ -1,9 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   citeListings,
+  conversionNote,
   hostLabel,
+  originalPrice,
   safeHref,
   type CitedListing,
   type CitedPlatform,
@@ -53,6 +55,15 @@ export function MarketCard({
 }) {
   const { market, suggested } = appraisal;
   const citations = citeListings(appraisal);
+
+  // The lookup is usually done by the time the price is locked, so this card can
+  // appear under the pointer that locked it. A second click of a double-click would
+  // then press "See my verdict" before the person has seen a figure.
+  const [settled, setSettled] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setSettled(true), 800);
+    return () => clearTimeout(timer);
+  }, []);
 
   return (
     <article className="rise overflow-hidden rounded-2xl border border-rule bg-surface">
@@ -115,6 +126,7 @@ export function MarketCard({
         <p className="text-xs leading-relaxed text-ink-secondary">
           Prices from public listings found by web search. Asking and sold prices,
           not offers you’ll receive.
+          {conversionNote(appraisal) ? ` ${conversionNote(appraisal)}` : ""}
         </p>
         <details>
           <summary className="cursor-pointer text-xs font-medium text-ink-secondary">
@@ -144,7 +156,7 @@ export function MarketCard({
           <button
             type="button"
             onClick={onContinue}
-            disabled={pending}
+            disabled={pending || !settled}
             className="mt-1 self-start rounded-full bg-ink px-5 py-2.5 text-sm font-medium text-plane transition-opacity hover:opacity-90 disabled:opacity-40"
           >
             {pending ? "Thinking…" : "See my verdict"}
@@ -424,7 +436,7 @@ function Strip({
 
         {placed.map(({ cited, at, row }, index) => {
           const { listing, href, n } = cited;
-          const label = `[${n}] ${formatUsd(listing.price)}, ${listing.platform}, ${listing.kind === "sold" ? "sold" : "asking price"}`;
+          const label = `[${n}] ${originalPrice(listing) ? "about " : ""}${formatUsd(listing.price)}, ${listing.platform}, ${listing.kind === "sold" ? "sold" : "asking price"}`;
           const style = {
             left: `${at}%`,
             top: 8 + row * ROW + DOT / 2,
@@ -472,7 +484,8 @@ function Strip({
             style={{ left: `${Math.min(Math.max(hovered.at, 22), 78)}%`, top: 8 + hovered.row * ROW - 6 }}
           >
             <span className="nums font-semibold">
-              [{hovered.cited.n}] {formatUsd(hovered.cited.listing.price)}
+              [{hovered.cited.n}] {originalPrice(hovered.cited.listing) ? "≈ " : ""}
+              {formatUsd(hovered.cited.listing.price)}
             </span>
             <span className="text-ink-secondary">
               {" "}
@@ -537,6 +550,7 @@ function PlatformGroup({
 function SourceRow({ cited }: { cited: CitedListing }) {
   const { n, listing, href } = cited;
   const host = hostLabel(href);
+  const original = originalPrice(listing);
   const meta = [
     listing.kind === "sold" ? "Sold" : "Asking",
     listing.condition === "unknown" ? null : listing.condition.replace("_", " "),
@@ -548,10 +562,14 @@ function SourceRow({ cited }: { cited: CitedListing }) {
   const body = (
     <>
       <span className="nums text-xs text-ink-muted">[{n}]</span>
-      <span className="nums font-semibold">{formatUsd(listing.price)}</span>
+      <span className="nums font-semibold">
+        {original ? "≈ " : ""}
+        {formatUsd(listing.price)}
+      </span>
       <span className="flex min-w-0 flex-col">
         <span className="truncate">{listing.title || "Listing"}</span>
         <span className="truncate text-xs text-ink-muted">
+          {original ? <span className="nums">{original} · </span> : null}
           {meta}
           {href ? <span aria-hidden> ↗</span> : null}
           {href ? <span className="sr-only"> (opens in a new tab)</span> : null}
@@ -560,7 +578,7 @@ function SourceRow({ cited }: { cited: CitedListing }) {
     </>
   );
   const row =
-    "-mx-2 grid grid-cols-[2rem_5rem_minmax(0,1fr)] items-baseline gap-x-2 rounded-lg px-2 py-2 text-sm";
+    "-mx-2 grid grid-cols-[2rem_6rem_minmax(0,1fr)] items-baseline gap-x-2 rounded-lg px-2 py-2 text-sm";
 
   return href ? (
     <a

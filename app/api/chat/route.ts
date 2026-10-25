@@ -42,6 +42,7 @@ import {
 import { appraisalInputSchema, computeAppraisal } from "@/lib/pricing";
 import {
   VERDICT_CHECK_LENGTH,
+  askedEnough,
   canEnter,
   opensLikePrompt,
   opensLikeVerdict,
@@ -59,7 +60,7 @@ import {
 /** The verdict streams for a while, and a platform's default would cut it off. */
 export const maxDuration = 60;
 
-/** The appraise step has its own route; only the streaming phases are served here. */
+/** The market lookup has its own route; only the streaming phases are served here. */
 const bodySchema = z.object({
   phase: z.enum(["intake", "probe", "verdict"]),
   intake: intakeSchema,
@@ -72,6 +73,11 @@ const bodySchema = z.object({
   message: z.string().trim().min(1).max(4000),
   /** Photos that first appear in `message`. */
   messagePhotoIds: z.array(z.string().min(1).max(64)).max(MAX_PHOTOS).optional(),
+  /**
+   * Their price is locked in, though not sent: a lookup that sent them back to the
+   * questions leaves it so. Tells the assistant not to ask for it again.
+   */
+  priceLocked: z.boolean().optional(),
 });
 
 type Event =
@@ -88,6 +94,9 @@ type Event =
  */
 const TAKE_PRICE_IN_BOX =
   "Thanks. Enter your price in the box below and lock it in, and I'll look up the market against it.";
+/** The same, once the price is already locked and the way on is the lookup button. */
+const PRICE_ALREADY_LOCKED =
+  "Your price is locked in — press Look up the market when you're ready.";
 const REPLY_WENT_WRONG =
   "Sorry, that reply went wrong. Please send your last message again.";
 const FINISH_QUESTIONS_FIRST =
@@ -106,6 +115,7 @@ export async function POST(request: Request) {
     transcript,
     message,
     messagePhotoIds,
+    priceLocked,
   } = parsed.data;
 
   const history: TranscriptMessage[] = [
@@ -158,7 +168,11 @@ export async function POST(request: Request) {
   // Everything below is the verdict's alone. After a failed lookup the person
   // goes back to the questions with their price still locked, and a probe turn
   // that could see it would be answering with the number in its prompt.
-  const context: TurnContext = { intake, photoCount: phaseContext.photoCount };
+  const context: TurnContext = {
+    intake,
+    photoCount: phaseContext.photoCount,
+    ...(phase !== "verdict" && priceLocked ? { priceLocked: true } : {}),
+  };
   if (phase === "verdict" && appraisalInput && askingPrice) {
     context.askingPrice = askingPrice;
     context.item = appraisalInput.item;
@@ -179,7 +193,8 @@ export async function POST(request: Request) {
             return;
           }
           if (next === "commit" && phase !== "verdict") {
-            // The reply being written is itself an assistant turn, and counts.
+            // The reply being written is itself an assistant turn, and counts. The
+            // assistant decides when it has the facts, so one reply is enough.
             const early = canEnter("commit", {
               ...phaseContext,
               assistantTurns: phaseContext.assistantTurns + 1,
@@ -228,21 +243,24 @@ export async function POST(request: Request) {
             `dropped a reply that ${drifted === "prompt" ? "began with the system prompt" : "was shaped like a verdict"} in the ${phase} phase`,
           );
           // Once the questions are done the next step is the price box whatever
-          // the model said, so that is where the person is sent. Before then the
-          // reply is replaced and nothing else changes.
-          const ready = canEnter("commit", {
+          // the model said, so that is where the person is sent; with the price
+          // already locked it is the lookup button. Before then the reply is
+          // replaced and nothing else changes.
+          const ready = askedEnough({
             ...phaseContext,
             assistantTurns: phaseContext.assistantTurns + 1,
           });
           send({
             t: "text",
-            v: ready.ok
-              ? TAKE_PRICE_IN_BOX
+            v: ready
+              ? priceLocked
+                ? PRICE_ALREADY_LOCKED
+                : TAKE_PRICE_IN_BOX
               : drifted === "prompt"
                 ? REPLY_WENT_WRONG
                 : FINISH_QUESTIONS_FIRST,
           });
-          if (ready.ok) send({ t: "stage", v: "commit" });
+          if (ready && !priceLocked) send({ t: "stage", v: "commit" });
         } else {
           filter.end();
         }

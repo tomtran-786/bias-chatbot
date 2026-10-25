@@ -6,6 +6,7 @@
  * by way of `server-only`.
  */
 import "server-only";
+import { DEFAULT_VND_PER_USD } from "./currency";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -21,6 +22,12 @@ function required(name: string): string {
 function positiveInt(name: string, fallback: number): number {
   const value = Number(process.env[name]);
   return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+/** A malformed or non-positive number falls back to the default. */
+function positiveNumber(name: string, fallback: number): number {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
 /**
@@ -145,9 +152,17 @@ export const env = {
    * that running out of quota ends in an error rather than a charge.
    */
   get dailySearchBudget() {
-    return positiveInt("DAILY_SEARCH_BUDGET", 40);
+    return positiveInt("DAILY_SEARCH_BUDGET", 80);
   },
   get dailyModelBudget() {
     return positiveInt("DAILY_MODEL_BUDGET", 300);
+  },
+  /**
+   * Đồng per US dollar, for listings priced in đồng. A fixed number on purpose: a
+   * live rate is one more service that can fail or start charging, and listings
+   * are a rough guide whose own spread is far wider than a few percent of drift.
+   */
+  get vndPerUsd() {
+    return positiveNumber("VND_PER_USD", DEFAULT_VND_PER_USD);
   },
 } as const;

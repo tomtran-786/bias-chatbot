@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import type { MarketStep } from "@/lib/market-client";
 import {
   ASKING_PRICE_PROMPT,
   MAX_ASKING_USD,
@@ -22,17 +23,31 @@ function parseAmount(text: string): number | null {
  * what owners would sell for, and that only means something if it is taken
  * before anything else has had a chance to move it — in a chat window the
  * assistant's market figures can be read before a number of one's own is formed.
- * Here the lookup is not requested until this is submitted, so there is nothing
- * to read ahead to.
+ *
+ * The market is looked up while they decide (lib/market-client.ts), so it is
+ * ready the moment they lock in, but nothing it finds is held anywhere a screen
+ * reads until they have: the lookup never sees the price, and this card shows
+ * nothing of it. Before they submit it can only be waiting; the progress line
+ * below appears after, if the lookup has not finished.
  *
  * Submit-once, deliberately. Being able to revise the price after seeing the
  * market would make it worthless as a baseline.
  */
+const PROGRESS: Record<MarketStep | "done", string> = {
+  facts: "Reading your conversation…",
+  search: "Searching used listings…",
+  read: "Checking each price against its page…",
+  done: "Working out the figures…",
+};
+
 export function PriceGate({
   pending,
+  step,
   onSubmit,
 }: {
   pending: boolean;
+  /** Which part of the market lookup is running, to say so while they wait. */
+  step: MarketStep | "done" | null;
   onSubmit: (asking: AskingPrice) => void;
 }) {
   const [text, setText] = useState("");
@@ -92,8 +107,8 @@ export function PriceGate({
         </button>
         {pending ? (
           <p className="text-xs text-ink-muted" role="status">
-            Reading your conversation, searching used listings and checking each
-            one against its source. This can take up to a minute.
+            {step ? PROGRESS[step] : "Getting the market ready…"} This can take up
+            to a minute.
           </p>
         ) : null}
       </form>

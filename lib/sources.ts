@@ -93,7 +93,13 @@ export type GroundedListing = ExtractedListing & {
 /** Enough text to carry the prices on a page; more only costs tokens. */
 export const MAX_SOURCE_CHARS = 3000;
 const MAX_LINE_CHARS = 300;
-const PRICE_LINE = /\$\s?\d/;
+/** A dollar amount, or one in đồng ("5.500.000 ₫", "5.500.000đ", "VND 5500000", "5,5 triệu", "5.5tr"). */
+const PRICE_LINE = /\$\s?\d|(?:₫|\bvn[dđ])\s?\d|\d\s?(?:₫|đ|vn[dđ]|triệu|tr|củ|tỷ)\d{0,3}(?![\p{L}\d])/iu;
+
+/** Whether the text a source offers carries any price at all. */
+export function hasPrice(source: Pick<Source, "text">): boolean {
+  return PRICE_LINE.test(source.text);
+}
 
 const collapse = (text: string) => text.replace(/\s+/g, " ").trim();
 
@@ -108,10 +114,10 @@ function isHttp(url: string): boolean {
 
 /**
  * The text a source offers the model: the search's own summary of the page,
- * then every line of the page body that carries a dollar amount.
+ * then every line of the page body that carries a dollar or đồng amount.
  *
  * Whole-page text would be thousands of tokens per source and mostly navigation;
- * the lines with a "$" are the ones a price can come from. The cut is a hard
+ * the lines with a price are the ones a price can come from. The cut is a hard
  * cap, applied last, so it can trim a long page but never reorder it.
  */
 function textOf(hit: SearchHit): string {
@@ -146,6 +152,20 @@ export function toSources(hits: readonly SearchHit[]): Source[] {
     }));
 }
 
+/** Sources the model reads at once. More only costs tokens: the cut keeps the ones with prices. */
+export const MAX_SOURCES = 24;
+
+/**
+ * At most `MAX_SOURCES`, those that carry a price first and each group in the order
+ * the search returned them. Numbered afterwards, so the cut never leaves a gap.
+ */
+export function limitSources(sources: readonly Source[]): Source[] {
+  return [
+    ...sources.filter((source) => hasPrice(source)),
+    ...sources.filter((source) => !hasPrice(source)),
+  ].slice(0, MAX_SOURCES);
+}
+
 /**
  * Whether `price` appears in `text` as a whole amount, not as the front of a
  * longer one.
@@ -171,7 +191,10 @@ export function priceAppearsIn(text: string, price: string): boolean {
     const after = haystack[at + needle.length];
     const next = haystack[at + needle.length + 1];
 
-    const startsClean = before === undefined || !/\d/.test(before);
+    // "500.000 ₫" is the tail of "5.500.000 ₫", not a price of its own.
+    const startsClean =
+      before === undefined ||
+      (!/\d/.test(before) && !(/[.,]/.test(before) && /\d/.test(haystack[at - 2] ?? "")));
     const endsClean =
       after === undefined ||
       (!/\d/.test(after) && !(/[.,]/.test(after) && next !== undefined && /\d/.test(next)));
@@ -180,8 +203,12 @@ export function priceAppearsIn(text: string, price: string): boolean {
   }
 }
 
+/** Where a platform sells, which decides which of the searches look for it. */
+export type Region = "us" | "vn";
+
 type PlatformRule = {
   name: string;
+  region: Region;
   /** Matches the host itself or any subdomain of it. */
   hosts: string[];
   /** Paths on this site that are a single item rather than a list of them. */
@@ -199,31 +226,39 @@ type PlatformRule = {
  * choose where the search looks.
  */
 const PLATFORMS: PlatformRule[] = [
-  { name: "eBay", hosts: ["ebay.com"], item: /^\/itm\//, usedMarket: true },
-  { name: "Swappa", hosts: ["swappa.com"], item: /^\/listing\//, usedMarket: true },
-  { name: "Mercari", hosts: ["mercari.com"], item: /^\/(?:us\/)?item\//, usedMarket: true },
+  { region: "us", name: "eBay", hosts: ["ebay.com"], item: /^\/itm\//, usedMarket: true },
+  { region: "us", name: "Swappa", hosts: ["swappa.com"], item: /^\/listing\//, usedMarket: true },
+  { region: "us", name: "Mercari", hosts: ["mercari.com"], item: /^\/(?:us\/)?item\//, usedMarket: true },
   {
+    region: "us",
     name: "Facebook Marketplace",
     hosts: ["facebook.com"],
     item: /^\/marketplace\/item\//,
     usedMarket: false,
   },
-  { name: "OfferUp", hosts: ["offerup.com"], item: /^\/item\/detail\//, usedMarket: true },
-  { name: "Craigslist", hosts: ["craigslist.org"], item: /\.html$/, usedMarket: true },
-  { name: "Reverb", hosts: ["reverb.com"], item: /^\/item\//, usedMarket: true },
-  { name: "Poshmark", hosts: ["poshmark.com"], item: /^\/listing\//, usedMarket: true },
-  { name: "Depop", hosts: ["depop.com"], item: /^\/products\//, usedMarket: true },
-  { name: "Back Market", hosts: ["backmarket.com"], item: /\/p\//, usedMarket: true },
-  { name: "Gazelle", hosts: ["gazelle.com"], item: /\/(?:buy|products?)\//, usedMarket: true },
-  { name: "Amazon", hosts: ["amazon.com"], item: /\/dp\//, usedMarket: false },
-  { name: "Best Buy", hosts: ["bestbuy.com"], item: /\/site\/.+\.p/, usedMarket: false },
-  { name: "Etsy", hosts: ["etsy.com"], item: /\/listing\//, usedMarket: false },
+  { region: "us", name: "OfferUp", hosts: ["offerup.com"], item: /^\/item\/detail\//, usedMarket: true },
+  { region: "us", name: "Craigslist", hosts: ["craigslist.org"], item: /\.html$/, usedMarket: true },
+  { region: "us", name: "Reverb", hosts: ["reverb.com"], item: /^\/item\//, usedMarket: true },
+  { region: "us", name: "Poshmark", hosts: ["poshmark.com"], item: /^\/listing\//, usedMarket: true },
+  { region: "us", name: "Depop", hosts: ["depop.com"], item: /^\/products\//, usedMarket: true },
+  { region: "us", name: "Back Market", hosts: ["backmarket.com"], item: /\/p\//, usedMarket: true },
+  { region: "us", name: "Gazelle", hosts: ["gazelle.com"], item: /\/(?:buy|products?)\//, usedMarket: true },
+  { region: "us", name: "Amazon", hosts: ["amazon.com"], item: /\/dp\//, usedMarket: false },
+  { region: "us", name: "Best Buy", hosts: ["bestbuy.com"], item: /\/site\/.+\.p/, usedMarket: false },
+  { region: "us", name: "Etsy", hosts: ["etsy.com"], item: /\/listing\//, usedMarket: false },
+  // Vietnam. Shopee and Lazada sell mostly new stock, but their used-item listings
+  // are worth reading; the reading prompt tells the model to report only those.
+  { region: "vn", name: "Chợ Tốt", hosts: ["chotot.com"], item: /\.htm$/, usedMarket: true },
+  { region: "vn", name: "Shopee", hosts: ["shopee.vn"], item: /-i\.\d+\.\d+/, usedMarket: true },
+  { region: "vn", name: "Lazada", hosts: ["lazada.vn"], item: /\/products\/.+\.html/, usedMarket: true },
 ];
 
-/** Where the search is told to look. */
-export const SEARCH_DOMAINS: string[] = PLATFORMS.filter((p) => p.usedMarket).flatMap(
-  (p) => p.hosts,
-);
+const domainsOf = (region: Region): string[] =>
+  PLATFORMS.filter((p) => p.usedMarket && p.region === region).flatMap((p) => p.hosts);
+
+/** Where the searches are told to look, by market. */
+export const SEARCH_DOMAINS_US: string[] = domainsOf("us");
+export const SEARCH_DOMAINS_VN: string[] = domainsOf("vn");
 
 /** For sites we have no rule for: a path that names a single item. */
 const GENERIC_ITEM = /\/(?:item|itm|listing|listings|product|products|dp)\/[^/]+/;

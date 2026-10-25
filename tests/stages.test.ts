@@ -5,8 +5,10 @@ import {
   STAGES,
   STAGE_INSTRUCTIONS,
   STAGE_LABELS,
+  askedEnough,
   canEnter,
   opensLikePrompt,
+  readyToPrice,
   opensLikeVerdict,
   type PhaseContext,
 } from "@/lib/stages";
@@ -35,8 +37,9 @@ describe("canEnter", () => {
   });
 
   describe("commit", () => {
-    it("needs every fact asked about", () => {
-      expect(canEnter("commit", { ...ready, assistantTurns: FACT_COUNT - 1 }).ok).toBe(false);
+    it("needs the assistant to have spoken, and nothing more: it decides when it has the facts", () => {
+      expect(canEnter("commit", { ...ready, assistantTurns: 0 }).ok).toBe(false);
+      expect(canEnter("commit", { ...ready, assistantTurns: 1 }).ok).toBe(true);
       expect(canEnter("commit", { ...ready, assistantTurns: FACT_COUNT }).ok).toBe(true);
     });
 
@@ -54,7 +57,7 @@ describe("canEnter", () => {
   describe("appraise", () => {
     it("re-checks the questions, the photo and the locked price", () => {
       expect(canEnter("appraise", ready).ok).toBe(true);
-      expect(canEnter("appraise", { ...ready, assistantTurns: FACT_COUNT - 1 }).ok).toBe(false);
+      expect(canEnter("appraise", { ...ready, assistantTurns: 0 }).ok).toBe(false);
       expect(canEnter("appraise", { ...ready, photoCount: 0 }).ok).toBe(false);
 
       const unlocked = canEnter("appraise", { ...ready, hasAskingPrice: false });
@@ -90,6 +93,41 @@ describe("stage tables", () => {
   });
 });
 
+describe("readyToPrice", () => {
+  it("is what the market lookup is gated on, and it never asks for a price", () => {
+    expect(readyToPrice({ ...ready, hasAskingPrice: false, hasAppraisal: false })).toBeNull();
+    expect(readyToPrice({ ...ready, assistantTurns: 0 })).toMatch(/not spoken/);
+    expect(readyToPrice({ ...ready, photoCount: 0 })).toMatch(/photo/);
+  });
+});
+
+describe("askedEnough", () => {
+  it("is the person's own say-so, and still needs a full set of questions", () => {
+    expect(askedEnough({ ...ready, assistantTurns: FACT_COUNT - 1 })).toBe(false);
+    expect(askedEnough({ ...ready, assistantTurns: FACT_COUNT })).toBe(true);
+    expect(askedEnough({ ...ready, photoCount: 0 })).toBe(false);
+  });
+});
+
+describe("the probe instruction", () => {
+  it("treats what they paid as the second fact, not as a price to sell at", () => {
+    expect(STAGE_INSTRUCTIONS.probe).toMatch(/second fact/);
+    expect(STAGE_INSTRUCTIONS.probe).toMatch(/not a price they want to sell at/);
+  });
+
+  it("checks the whole conversation before asking, and never asks a fact twice", () => {
+    for (const stage of ["intake", "probe"] as const) {
+      expect(STAGE_INSTRUCTIONS[stage]).toMatch(/description/);
+      expect(STAGE_INSTRUCTIONS[stage]).toMatch(/commit phase/);
+    }
+    expect(STAGE_INSTRUCTIONS.probe).toMatch(/Never ask for a fact they have already answered/);
+  });
+
+  it("only mentions the price box to someone who raised price", () => {
+    expect(STAGE_INSTRUCTIONS.probe).toMatch(/Only if they say what they want to sell it for/);
+  });
+});
+
 describe("opensLikeVerdict", () => {
   it.each([
     "## Suggested price\n$10.",
@@ -111,7 +149,7 @@ describe("opensLikeVerdict", () => {
   });
 
   it("is told to the model in words too: a typed price is not weighed up", () => {
-    expect(STAGE_INSTRUCTIONS.probe).toMatch(/type a price/);
+    expect(STAGE_INSTRUCTIONS.probe).toMatch(/what they want to sell it for/);
     expect(STAGE_INSTRUCTIONS.probe).toMatch(/Suggested price, Why this price/);
     expect(STAGE_INSTRUCTIONS.probe).toMatch(/price box/);
   });

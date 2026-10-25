@@ -22,6 +22,7 @@
  */
 import "server-only";
 import { z } from "zod";
+import { env } from "./env";
 import type { Intake, ItemFacts } from "./item";
 import { inTryOrder, markUnavailable } from "./model-health";
 import {
@@ -42,7 +43,7 @@ import type { Source } from "./sources";
 import type { Stage } from "./stages";
 import type { TranscriptMessage } from "./transcript";
 
-const CALL_TIMEOUT_MS = 45_000;
+const CALL_TIMEOUT_MS = 25_000;
 const STREAM_TIMEOUT_MS = 120_000;
 /** Bounds a runaway answer, which JSON mode can produce if it never closes the object. */
 const MAX_JSON_TOKENS = 4096;
@@ -484,6 +485,7 @@ const FACTS_EXAMPLE = {
   included: ["box"],
   defects: ["light scratches on the back"],
   purchasePrice: 700,
+  purchaseCurrency: "USD",
 };
 
 const READING_EXAMPLE = {
@@ -535,7 +537,7 @@ export function createBackend(spec: BackendSpec): Backend {
         FACTS_EXAMPLE,
         fetchImpl,
       );
-      return parseFacts(text);
+      return parseFacts(text, env.vndPerUsd);
     },
 
     /** Reads listings out of the sources. Takes the facts through `forSearch`, like Gemini's. */

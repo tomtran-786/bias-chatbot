@@ -16,11 +16,11 @@
  *
  * What does not fall back, on purpose:
  *
- * - **Timeouts.** A call that has already used its 45 seconds leaves no time for a
- *   second one inside a 60-second request, and a hang says nothing about quota.
- * - **Gemini answering badly** (malformed JSON, wrong schema). That is not
- *   availability; silently swapping the model would hide a prompt problem from
- *   whoever is debugging it.
+ * - **Timeouts and bad answers.** Gemini's own chain already tries its next model for
+ *   these (lib/gemini.ts), inside the step's budget. A hang says nothing about quota,
+ *   and a backup has no time left in a 60-second request after the chain used it.
+ *   When every Gemini model answered badly it is that error that is reported, so a
+ *   prompt problem is not hidden behind a different model's answer.
  * - **A Gemini stream that has already started.** Half of one reply from one model
  *   and half from another is worse than an error. Quota errors arrive before the
  *   first token, so in practice this only matters for a mid-reply failure.

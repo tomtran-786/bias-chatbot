@@ -149,3 +149,75 @@ body {
     transform: scaleX(1);
   }
 }
+
+/*
+ * The explainer's diagrams (components/LossAversionIntro.tsx) draw themselves once,
+ * when they scroll into view. Only transform, opacity and a stroke offset move; each
+ * piece has its own delay and duration so the figure reads in the order it is meant
+ * to be understood. Nothing loops. Without motion the figures are simply drawn, and
+ * the replay button, which would do nothing, is hidden.
+ */
+.fig .anim-draw {
+  stroke-dasharray: 1;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .fig .anim {
+    animation-duration: var(--dur, 450ms);
+    animation-delay: var(--delay, 0ms);
+    animation-timing-function: cubic-bezier(0.2, 0.7, 0.3, 1);
+    animation-fill-mode: both;
+    animation-play-state: paused;
+  }
+  .fig.play .anim {
+    animation-play-state: running;
+  }
+  .fig .anim-draw {
+    animation-name: draw;
+  }
+  .fig .anim-fade {
+    animation-name: fade;
+  }
+  .fig .anim-grow-x {
+    animation-name: grow;
+    transform-origin: left center;
+  }
+  .fig .anim-grow-y {
+    animation-name: grow-y;
+    transform-box: fill-box;
+    transform-origin: center var(--origin, bottom);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .replay {
+    display: none;
+  }
+}
+
+@keyframes draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes grow-y {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}

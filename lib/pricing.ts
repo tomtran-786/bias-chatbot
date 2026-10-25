@@ -8,9 +8,9 @@
  * a model asked for both the parts and the total bends the total toward the
  * verdict it has already formed.
  *
- * Deliberately free of `server-only`: the appraise route sends these figures to
- * the browser, the chat route recomputes them from the raw listings the browser
- * posts back, and both sides need the types.
+ * Deliberately free of `server-only`: the browser computes these figures from the
+ * listings the market route returns, the chat route recomputes them from the raw
+ * listings the browser posts back, and both sides need the code and the types.
  */
 import { z } from "zod";
 import {
@@ -20,6 +20,7 @@ import {
   type GroundedListing,
   type Source,
 } from "./sources";
+import { DEFAULT_VND_PER_USD, vndAmounts, vndToUsd } from "./currency";
 import { itemFactsSchema, type ItemFacts } from "./item";
 
 /** A market needs this many listings before it gets a range and an adjustment. */
@@ -46,7 +47,7 @@ export const POSITIONS = ["below", "typical", "above"] as const;
 export type Position = (typeof POSITIONS)[number];
 
 const OTHER_CURRENCY =
-  /[£€¥₹₩₫₱฿₪₺₽]|\b(?:EUR|GBP|CAD|AUD|NZD|JPY|CNY|INR|MXN|CHF|SEK|NOK|DKK|PLN|BRL|SGD|HKD|KRW|VND)\b|\b(?:C|CA|AU|A|NZ|MX|HK|S|R)\s?\$/;
+  /[£€¥₹₩₱฿₪₺₽]|\b(?:EUR|GBP|CAD|AUD|NZD|JPY|CNY|INR|MXN|CHF|SEK|NOK|DKK|PLN|BRL|SGD|HKD|KRW)\b|\b(?:C|CA|AU|A|NZ|MX|HK|S|R)\s?\$/;
 
 const USD_AMOUNT =
   /(?:US\s?)?\$\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?|\bUSD\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?/g;
@@ -56,10 +57,26 @@ const USD_AMOUNT =
  *
  * Done here rather than asked of the model because "US $1,049.99" is exactly the
  * kind of string a model silently turns into 1049 or 104999. Null covers every
- * case where the honest answer is "not a single USD amount": another currency,
- * a range, a price with a second price beside it, free, or nothing parseable.
+ * case where the honest answer is "not a single amount": another currency, a
+ * range, a price with a second price beside it, free, or nothing parseable.
+ *
+ * Dollars and đồng are both read ("5.500.000 ₫", "5,5 triệu", "5.5tr"), the
+ * latter converted at `vndPerUsd`. A text with both is two prices, so it is null.
  */
-export function parsePriceText(text: string): number | null {
+export function parsePriceText(
+  text: string,
+  vndPerUsd: number = DEFAULT_VND_PER_USD,
+): number | null {
+  const dong = vndAmounts(text);
+  if (dong.length > 0) {
+    if (OTHER_CURRENCY.test(text) || /\$\s?\d|\bUSD\b/i.test(text)) return null;
+    if (dong.length > 1) {
+      const between = text.slice(dong[0].end, dong[1].index);
+      if (!/\+|ship|giao|vận chuyển|phí|deliver|fee/i.test(between)) return null;
+    }
+    return vndToUsd(dong[0].vnd, vndPerUsd);
+  }
+
   if (OTHER_CURRENCY.test(text)) return null;
 
   const amounts = [...text.matchAll(USD_AMOUNT)];
@@ -94,11 +111,12 @@ export function parsePriceText(text: string): number | null {
 export function groundNewPrice(
   claim: ExtractedNewPrice | null | undefined,
   sources: readonly Source[],
+  vndPerUsd: number = DEFAULT_VND_PER_USD,
 ): { price: number; url: string } | null {
   if (!claim) return null;
   const source = sources[claim.sourceIndex];
   if (!source || !priceAppearsIn(source.text, claim.priceText)) return null;
-  const price = parsePriceText(claim.priceText);
+  const price = parsePriceText(claim.priceText, vndPerUsd);
   return price === null ? null : { price, url: source.url };
 }
 
@@ -199,12 +217,13 @@ export function listingPrice(value: number, ceiling?: number): number {
 function screen(
   listings: readonly GroundedListing[],
   newPrice: number | null,
+  vndPerUsd: number,
 ): Array<GroundedListing & { price: number }> {
   const seen = new Set<string>();
   const kept: Array<GroundedListing & { price: number }> = [];
 
   for (const listing of listings) {
-    const price = parsePriceText(listing.priceText);
+    const price = parsePriceText(listing.priceText, vndPerUsd);
     if (price === null) continue;
     if (listing.condition === "for_parts") continue;
     if (newPrice !== null && price > newPrice) continue;
@@ -259,6 +278,8 @@ export const appraisalInputSchema = z.object({
   newPriceUrl: z.string().max(2000).nullable().default(null),
   position: z.enum(POSITIONS),
   positionEvidence: z.string().max(600),
+  /** The rate listings in đồng were converted at, so server and browser agree on every figure. */
+  vndPerUsd: z.number().positive().max(1_000_000).default(DEFAULT_VND_PER_USD),
 });
 
 export type AppraisalInput = z.output<typeof appraisalInputSchema>;
@@ -318,11 +339,12 @@ const ANCHOR_FOR: Record<Position, Suggested["anchor"]> = {
 export function computeAppraisal(
   input: Pick<AppraisalInput, "listings" | "newPrice" | "position" | "positionEvidence"> & {
     newPriceUrl?: string | null;
+    vndPerUsd?: number;
   },
   asking: number,
 ): Appraisal {
   const newPrice = input.newPrice ?? null;
-  const screened = screen(input.listings, newPrice);
+  const screened = screen(input.listings, newPrice, input.vndPerUsd ?? DEFAULT_VND_PER_USD);
 
   const verified = screened.filter((l) => l.match === "verified");
   const unverified = screened
@@ -406,7 +428,7 @@ export function computeAppraisal(
   };
 }
 
-/** What the appraise route returns: the figures, plus what they came from. */
+/** The market card's data: the figures, plus what they came from. Built in the browser from the market steps. */
 export type AppraiseResponse = Appraisal & {
   item: ItemFacts;
   /**

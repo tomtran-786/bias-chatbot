@@ -12,12 +12,20 @@ import {
   type Intake,
   type Photo,
 } from "@/lib/item";
-import { citeListings, safeHref } from "@/lib/citations";
-import { formatUsd, type AppraiseResponse } from "@/lib/pricing";
+import { citeListings, conversionNote, originalPrice, safeHref } from "@/lib/citations";
 import {
-  FACT_COUNT,
+  MarketError,
+  isAbort,
+  runMarket,
+  type MarketCache,
+  type MarketResult,
+  type MarketStep,
+} from "@/lib/market-client";
+import { computeAppraisal, formatUsd, type AppraiseResponse } from "@/lib/pricing";
+import {
   STAGES,
   STAGE_LABELS,
+  askedEnough,
   canEnter,
   type Stage,
 } from "@/lib/stages";
@@ -71,9 +79,10 @@ const ERROR_COPY: Record<ChatError, string> = {
 
 const LOOKUP_FAILED = "Couldn’t look up the market right now. Try again in a minute.";
 
-/** What the market lookup can refuse with, in words a person can act on. */
+/** What a market step can refuse with, in words a person can act on. */
 const APPRAISE_ERROR_COPY: Record<string, string> = {
   rate_limited: LOOKUP_FAILED,
+  network: LOOKUP_FAILED,
   appraisal_failed: LOOKUP_FAILED,
   search_quota: LOOKUP_FAILED,
   search_unavailable: LOOKUP_FAILED,
@@ -90,6 +99,14 @@ const RAIL = STAGES.filter((stage) => stage !== "complete");
 
 const toTranscript = (messages: StreamMessage[]): TranscriptMessage[] =>
   messages.map(({ role, text, at, photoIds }) => ({ role, text, at, photoIds }));
+
+/** A lookup that started while the person was still deciding on a price. */
+type Prefetch = {
+  /** How many messages the conversation had when it started, which is what it read. */
+  turns: number;
+  controller: AbortController;
+  promise: Promise<MarketResult>;
+};
 
 type SendOptions = {
   hidden?: boolean;
@@ -124,15 +141,25 @@ export function Conversation() {
   const [attachments, setAttachments] = useState<Photo[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [appraising, setAppraising] = useState(false);
+  const [marketStep, setMarketStep] = useState<MarketStep | "done" | null>(null);
   const [error, setError] = useState<ChatError | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const opened = useRef(new Set<Stage>());
+  // The market lookup runs ahead of the price (see `startMarket`). Nothing it finds
+  // is put in state that a screen reads until the price is locked.
+  const market = useRef<MarketCache>({});
+  const prefetch = useRef<Prefetch | null>(null);
+  const prefetchedFor = useRef<number | null>(null);
 
+  // Follows the thread as it grows. Not on the intake form, which is read from the
+  // top: the explainer is the first thing on it, and scrolling to the bottom on load
+  // would start the person at the form with the explanation above the fold.
   useEffect(() => {
+    if (!intake) return;
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, phase, appraisal, streaming, appraising]);
+  }, [intake, messages, phase, appraisal, streaming, appraising]);
 
   // Intake and verdict both begin with the assistant, so their opening turn is
   // sent on the person's behalf instead of waiting for them to type.
@@ -204,6 +231,9 @@ export function Conversation() {
           // rejects an explicit null.
           askingPrice: forVerdict ? (askingPrice ?? undefined) : undefined,
           appraisal: forVerdict ? appraisal?.raw : undefined,
+          // Tells the questions not to ask for a price that is already locked in,
+          // without telling them what it is.
+          priceLocked: !forVerdict && askingPrice !== null ? true : undefined,
           transcript: toTranscript(messages),
           message: text,
           messagePhotoIds: photoIds.length ? photoIds : undefined,
@@ -263,22 +293,25 @@ export function Conversation() {
         }
       }
 
-      // A verdict cut off half way has no composer to continue from, so it is
-      // withdrawn and offered again rather than left standing as the answer.
-      if (!generated || (failed && phase !== "probe")) {
+      // A reply cut off half way is withdrawn together with the message it answered,
+      // and the message goes back into the box. Keeping either would leave the
+      // transcript with a question the assistant answers twice, or with a reply that
+      // answers nothing, and the assistant would ask again what it was already told.
+      if (!generated || failed) {
         rollBack();
         return;
       }
 
       // Applied only once the turn has landed, so the phase never changes
       // underneath a reply that is still being written.
-      if (failed) return;
       if (phase === "intake") setPhase("probe");
       if (phase === "verdict") setPhase("complete");
       for (const stage of stages) {
-        // The server drops a commit marker that arrives too early; checking
-        // again here means a stale or tampered stream cannot skip the questions
-        // either. With a price already locked, the lookup button takes over.
+        // The server drops a commit marker that arrives with nothing to follow;
+        // checking again here means a stale or tampered stream cannot skip the
+        // questions either. The assistant decides when it has the facts, so this can
+        // come at the first reply. With a price already locked, the lookup button
+        // takes over.
         if (stage === "commit" && phase !== "verdict" && !askingPrice) {
           const gate = canEnter("commit", {
             assistantTurns: assistantTurns(toTranscript(history)) + 1,
@@ -297,54 +330,98 @@ export function Conversation() {
     }
   }
 
+  /**
+   * Starts reading the conversation, searching and reading listings, so the market is
+   * ready when the price is. Starts over when the conversation has moved on; what
+   * the new reading shares with the old one (the search, if the item is the same) is
+   * kept in `market`, so a second start costs a model call and not the whole lookup.
+   */
+  function startMarket() {
+    if (!intake) return;
+    const transcript = toTranscript(messages);
+    prefetch.current?.controller.abort();
+
+    const controller = new AbortController();
+    const promise = runMarket({ intake, photos, transcript }, market.current, {
+      signal: controller.signal,
+      onStep: setMarketStep,
+    });
+    const started: Prefetch = { turns: transcript.length, controller, promise };
+    prefetch.current = started;
+
+    promise.catch((thrown) => {
+      if (isAbort(thrown) || prefetch.current !== started) return;
+      if (thrown instanceof MarketError && thrown.code === "needs_identity") {
+        backToQuestions(null);
+        return;
+      }
+      // Not shown: the person has not asked for the market yet. Locking the price
+      // runs whatever is missing, and that is the attempt that reports an error.
+      console.warn("market lookup ahead of the price failed:", thrown);
+    });
+  }
+
+  /** The conversation never pinned the item down: back to the questions, price (if any) kept. */
+  function backToQuestions(locked: AskingPrice | null) {
+    if (locked) setAskingPrice(locked);
+    setPhase("probe");
+    setMarketStep(null);
+    setFailure(
+      locked
+        ? "The assistant couldn’t tell which model this is. Add the model name, a label or a screenshot of the settings, then look up the market again. Your price stays locked in."
+        : "The assistant couldn’t tell which model this is. Add the model name, a label or a screenshot of the settings, and answer its next question.",
+    );
+  }
+
   async function requestAppraisal(asking: AskingPrice) {
     if (!intake) return;
     setAppraising(true);
     setFailure(null);
+    const transcript = toTranscript(messages);
     try {
-      const response = await fetch("/api/appraise", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          intake,
-          photos,
-          askingPrice: asking,
-          transcript: toTranscript(messages),
-        }),
-      });
-      const body = (await response.json().catch(() => null)) as
-        | (AppraiseResponse & { error?: undefined })
-        | { error?: string; reason?: string }
-        | null;
+      // Joins the lookup that is already running when it read this conversation;
+      // otherwise runs what is missing. Either way the figures are worked out here,
+      // from the listings, now that there is a price to set them against.
+      const ahead = prefetch.current;
+      const joined =
+        ahead && ahead.turns === transcript.length
+          ? await ahead.promise.catch(() => null)
+          : null;
+      if (!joined) ahead?.controller.abort();
+      const result =
+        joined ??
+        (await runMarket({ intake, photos, transcript }, market.current, {
+          onStep: setMarketStep,
+        }));
 
-      if (!response.ok || !body || body.error || !("market" in body)) {
-        const code = body && "error" in body ? body.error : undefined;
-        if (code === "needs_identity") {
-          // The price stays locked: nothing about the market has been seen, so
-          // the baseline is intact. The questions pick up where they left off.
-          setAskingPrice(asking);
-          setPhase("probe");
-          setFailure(
-            "The assistant couldn’t tell which model this is. Add the model name, a label or a screenshot of the settings, then look up the market again. Your price stays locked in.",
-          );
-        } else {
-          // The server's reason is for whoever is running this, not for the
-          // person using it: it goes to the console and the screen gets plain copy.
-          const reason = body && "reason" in body ? body.reason : undefined;
-          if (reason) console.warn(`market lookup failed (${code ?? "unknown"}):`, reason);
-          setFailure((code && APPRAISE_ERROR_COPY[code]) || LOOKUP_FAILED);
-        }
-        return;
-      }
-
+      const response: AppraiseResponse = {
+        ...computeAppraisal(result.raw, asking.usd),
+        item: result.item,
+        raw: result.raw,
+        queries: result.queries,
+        backup: result.backup,
+      };
       setAskingPrice(asking);
-      setAppraisal(body as AppraiseResponse);
+      setAppraisal(response);
       setAppraisedAt(messages.length);
       setPhase("appraise");
-    } catch {
-      setFailure(LOOKUP_FAILED);
+    } catch (thrown) {
+      const code = thrown instanceof MarketError ? thrown.code : undefined;
+      if (code === "needs_identity") {
+        // The price stays locked: nothing about the market has been seen, so
+        // the baseline is intact. The questions pick up where they left off.
+        backToQuestions(asking);
+      } else {
+        // The server's reason is for whoever is running this, not for the
+        // person using it: it goes to the console and the screen gets plain copy.
+        if (thrown instanceof MarketError && thrown.reason) {
+          console.warn(`market lookup failed (${thrown.code}):`, thrown.reason);
+        }
+        setFailure((code && APPRAISE_ERROR_COPY[code]) || LOOKUP_FAILED);
+      }
     } finally {
       setAppraising(false);
+      setMarketStep(null);
     }
   }
 
@@ -359,15 +436,31 @@ export function Conversation() {
 
   const asked = assistantTurns(toTranscript(messages));
   const composing = phase === "intake" || phase === "probe";
+  // The button for the person to say they are done, in case the assistant has not.
+  // The assistant saying it is done (the commit marker) needs no count at all.
   const canPrice =
     phase === "probe" &&
     !askingPrice &&
-    canEnter("commit", {
+    askedEnough({
       assistantTurns: asked,
       photoCount: photoCount(toTranscript(messages)),
       hasAskingPrice: false,
       hasAppraisal: false,
-    }).ok;
+    });
+  const wantsMarket =
+    intake !== null &&
+    !askingPrice &&
+    !streaming &&
+    (phase === "commit" || canPrice);
+
+  // Looks up the market as soon as the questions are done, and again when the
+  // person adds something to them after.
+  useEffect(() => {
+    if (!wantsMarket || prefetchedFor.current === messages.length) return;
+    prefetchedFor.current = messages.length;
+    startMarket();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wantsMarket, messages.length]);
   const before = appraisedAt === null ? messages : messages.slice(0, appraisedAt);
   const after = appraisedAt === null ? [] : messages.slice(appraisedAt);
   const photoById = new Map(photos.map((photo) => [photo.id, photo]));
@@ -390,12 +483,6 @@ export function Conversation() {
             </h1>
             <p className="text-xs text-ink-muted">
               {STAGE_LABELS[phase]}
-              {composing && intake ? (
-                <span className="nums">
-                  {" "}
-                  · {Math.min(asked, FACT_COUNT)}/{FACT_COUNT} asked
-                </span>
-              ) : null}
             </p>
           </div>
           {intake ? (
@@ -446,7 +533,11 @@ export function Conversation() {
           ))}
 
           {phase === "commit" ? (
-            <PriceGate pending={appraising} onSubmit={requestAppraisal} />
+            <PriceGate
+              pending={appraising}
+              step={marketStep}
+              onSubmit={requestAppraisal}
+            />
           ) : null}
 
           {appraisal && askingPrice ? (
@@ -563,9 +654,9 @@ export function Conversation() {
               <p className="text-xs text-ink-muted">
                 {askingPrice
                   ? "Your price is still locked in. Answer, then look up the market again."
-                  : asked < FACT_COUNT
-                    ? `Four questions, then you set your price — it unlocks after ${FACT_COUNT}.`
-                    : "Enough asked to price. Keep going if there is more to say."}
+                  : canPrice
+                    ? "Enough asked to price. Keep going if there is more to say."
+                    : "A few questions, then you set your price."}
               </p>
               {askingPrice && phase === "probe" ? (
                 <button
@@ -688,7 +779,10 @@ function VerdictSources({ appraisal }: { appraisal: AppraiseResponse }) {
             <>
               <span className="nums text-ink-muted">[{n}]</span>
               {listing.platform}
-              <span className="nums font-medium text-ink">{formatUsd(listing.price)}</span>
+              <span className="nums font-medium text-ink">
+                {originalPrice(listing) ? "≈ " : ""}
+                {formatUsd(listing.price)}
+              </span>
               {href ? <span aria-hidden>↗</span> : null}
             </>
           );
@@ -716,6 +810,9 @@ function VerdictSources({ appraisal }: { appraisal: AppraiseResponse }) {
           </li>
         ) : null}
       </ul>
+      {conversionNote(appraisal) ? (
+        <p className="text-xs text-ink-muted">{conversionNote(appraisal)}</p>
+      ) : null}
     </section>
   );
 }

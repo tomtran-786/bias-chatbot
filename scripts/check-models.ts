@@ -7,9 +7,13 @@
  * word, in parallel, and prints how each did, so GEMINI_MODEL and
  * GEMINI_FALLBACK_MODELS can be chosen from what works instead of from memory.
  *
+ * Each model is asked with the same thinking setting the app uses (a low thinking
+ * level, lib/gemini.ts), and asked again without it if that is what it refused, so
+ * the output says which models take it and which the app will drop it for.
+ *
  * Run: npm run models        (reads .env.local; about a dozen tiny free calls)
  */
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 
 const key = process.env.GEMINI_API_KEY;
 if (!key) {
@@ -29,21 +33,39 @@ for await (const model of await ai.models.list({ config: { pageSize: 100 } })) {
   }
 }
 
+async function ask(model: string, thinking: boolean) {
+  await Promise.race([
+    ai.models.generateContent({
+      model,
+      contents: "Reply with: ok",
+      ...(thinking ? { config: { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } } } : {}),
+    }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`no answer in ${WAIT_MS / 1000}s`)), WAIT_MS)),
+  ]);
+}
+
 async function tryModel(model: string): Promise<{ ok: boolean; note: string }> {
   const started = Date.now();
+  const took = () => `${((Date.now() - started) / 1000).toFixed(1)}s`;
   try {
-    await Promise.race([
-      ai.models.generateContent({ model, contents: "Reply with: ok" }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error(`no answer in ${WAIT_MS / 1000}s`)), WAIT_MS)),
-    ]);
-    return { ok: true, note: `answers in ${((Date.now() - started) / 1000).toFixed(1)}s` };
+    await ask(model, true);
+    return { ok: true, note: `answers in ${took()}, takes thinkingLevel LOW` };
   } catch (error) {
     let note = error instanceof Error ? error.message : String(error);
     try {
       const detail = JSON.parse(note).error;
-      note = `${detail.code} ${detail.status}`;
+      note = `${detail.code} ${detail.status}${/thinking/i.test(detail.message ?? "") ? " (thinking)" : ""}`;
     } catch {
       // not a JSON error body: keep the message
+    }
+    if (/^400.*\(thinking\)/.test(note)) {
+      // The one refusal the app works around: it asks again without the setting.
+      try {
+        await ask(model, false);
+        return { ok: true, note: `answers in ${took()}, REJECTS thinkingLevel (the app drops it for this model)` };
+      } catch {
+        // falls through to the failure below
+      }
     }
     return { ok: false, note: note.slice(0, 60) };
   }

@@ -2,8 +2,12 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
   MAX_SOURCE_CHARS,
-  SEARCH_DOMAINS,
+  MAX_SOURCES,
+  SEARCH_DOMAINS_US,
+  SEARCH_DOMAINS_VN,
   groundListing,
+  hasPrice,
+  limitSources,
   groundListings,
   identify,
   priceAppearsIn,
@@ -153,14 +157,127 @@ describe("identify", () => {
   });
 });
 
-describe("SEARCH_DOMAINS", () => {
+describe("the search domains", () => {
   it("lists the used-item marketplaces and leaves out what the search cannot use", () => {
-    expect(SEARCH_DOMAINS).toEqual(expect.arrayContaining(["ebay.com", "swappa.com", "mercari.com"]));
+    expect(SEARCH_DOMAINS_US).toEqual(expect.arrayContaining(["ebay.com", "swappa.com", "mercari.com"]));
     // Needs a login: the search cannot read inside it.
-    expect(SEARCH_DOMAINS).not.toContain("facebook.com");
+    expect(SEARCH_DOMAINS_US).not.toContain("facebook.com");
     // Sell new stock: a new price is not a used one.
-    expect(SEARCH_DOMAINS).not.toContain("amazon.com");
-    expect(SEARCH_DOMAINS).not.toContain("bestbuy.com");
+    expect(SEARCH_DOMAINS_US).not.toContain("amazon.com");
+    expect(SEARCH_DOMAINS_US).not.toContain("bestbuy.com");
+  });
+
+  it("keeps the two markets apart", () => {
+    expect(SEARCH_DOMAINS_VN).toEqual(["chotot.com", "shopee.vn", "lazada.vn"]);
+    for (const domain of SEARCH_DOMAINS_VN) expect(SEARCH_DOMAINS_US).not.toContain(domain);
+  });
+});
+
+describe("the Vietnamese marketplaces", () => {
+  it("are named from their URLs, subdomains included", () => {
+    expect(identify("https://www.chotot.com/mua-ban-dien-thoai-quan-1/123456789.htm")).toEqual({
+      platform: "Chợ Tốt",
+      isItemPage: true,
+    });
+    expect(identify("https://xe.chotot.com/mua-ban-oto/1.htm")?.platform).toBe("Chợ Tốt");
+    expect(identify("https://shopee.vn/iPhone-13-128GB-i.123456.7890123")).toEqual({
+      platform: "Shopee",
+      isItemPage: true,
+    });
+    expect(identify("https://shopee.vn/search?keyword=iphone")?.isItemPage).toBe(false);
+    expect(identify("https://www.lazada.vn/products/iphone-13-i123-s456.html")).toEqual({
+      platform: "Lazada",
+      isItemPage: true,
+    });
+  });
+
+  it("keep a price in đồng that the page showed, and refuse one it did not", () => {
+    const source: Source = {
+      url: "https://www.chotot.com/mua-ban/1.htm",
+      title: "iPhone 13",
+      text: "iPhone 13 128GB cũ\nGiá 5.500.000 ₫\nLiên hệ",
+    };
+    const listing: ExtractedListing = {
+      title: "iPhone 13",
+      priceText: "5.500.000 ₫",
+      kind: "active",
+      condition: "good",
+      platform: "x",
+      sourceIndex: 0,
+    };
+    expect(groundListing(listing, [source])).toMatchObject({ match: "verified", platform: "Chợ Tốt" });
+    expect(groundListing({ ...listing, priceText: "6.500.000 ₫" }, [source]).match).toBe("unverified");
+  });
+});
+
+describe("priceAppearsIn, for đồng", () => {
+  it("matches a price as the page wrote it", () => {
+    expect(priceAppearsIn("Giá: 5.500.000 ₫", "5.500.000 ₫")).toBe(true);
+    expect(priceAppearsIn("Giá: 5.500.000đ.", "5.500.000đ")).toBe(true);
+    expect(priceAppearsIn("Price 5,500,000 VND", "5,500,000 VND")).toBe(true);
+    expect(priceAppearsIn("Giá chỉ 5,5 triệu", "5,5 triệu")).toBe(true);
+  });
+
+  it("does not accept the tail or the front of a bigger amount", () => {
+    expect(priceAppearsIn("Giá 15.500.000 ₫", "5.500.000 ₫")).toBe(false);
+    expect(priceAppearsIn("Giá 5.500.000 ₫", "500.000 ₫")).toBe(false);
+    expect(priceAppearsIn("Giá 5.500.000 ₫", "5.500 ₫")).toBe(false);
+    expect(priceAppearsIn("Giá 25,5 triệu", "5,5 triệu")).toBe(false);
+  });
+});
+
+describe("the text a source offers", () => {
+  const hit = (raw: string): SearchHit => ({
+    title: "t",
+    url: "https://shopee.vn/x-i.1.2",
+    content: "",
+    rawContent: raw,
+  });
+
+  it("keeps the lines that carry a price in đồng, and drops the navigation", () => {
+    const [source] = toSources([
+      hit(["Trang chủ", "iPhone 13 cũ 5.500.000 ₫", "Giá 5.200.000đ", "Còn 6,3 triệu", "Đăng nhập", "VND 4500000", "7tr5"].join("\n")),
+    ]);
+    expect(source.text).toContain("5.500.000 ₫");
+    expect(source.text).toContain("5.200.000đ");
+    expect(source.text).toContain("6,3 triệu");
+    expect(source.text).toContain("VND 4500000");
+    expect(source.text).toContain("7tr5");
+    expect(source.text).not.toContain("Trang chủ");
+    expect(source.text).not.toContain("Đăng nhập");
+  });
+
+  it("does not mistake an ordinary word for a price", () => {
+    const [source] = toSources([hit("Mua 2 trong 1\nTrả góp 0%\nSố 5 đường")]);
+    expect(hasPrice(source)).toBe(false);
+  });
+
+  it("counts a source as priced by dollars or đồng", () => {
+    expect(hasPrice({ text: "Sold for $312" })).toBe(true);
+    expect(hasPrice({ text: "5.500.000 ₫" })).toBe(true);
+    expect(hasPrice({ text: "no price here" })).toBe(false);
+  });
+});
+
+describe("limitSources", () => {
+  const source = (n: number, priced: boolean): Source => ({
+    url: `https://a.example/${n}`,
+    title: String(n),
+    text: priced ? "$100" : "nothing",
+  });
+
+  it("keeps the sources with a price first, in the order they came, and caps the count", () => {
+    const many = Array.from({ length: MAX_SOURCES + 10 }, (_, n) => source(n, n % 2 === 1));
+    const limited = limitSources(many);
+    expect(limited).toHaveLength(MAX_SOURCES);
+    expect(limited[0].title).toBe("1");
+    expect(limited[1].title).toBe("3");
+    expect(limited.slice(0, 5).every(hasPrice)).toBe(true);
+  });
+
+  it("changes nothing when there are few", () => {
+    const few = [source(0, false), source(1, true)];
+    expect(limitSources(few).map((s) => s.title)).toEqual(["1", "0"]);
   });
 });
 

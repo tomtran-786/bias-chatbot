@@ -28,7 +28,9 @@ import {
   ApiError,
   GoogleGenAI,
   PartMediaResolutionLevel,
+  ThinkingLevel,
   type Content,
+  type GenerateContentConfig,
   type Part,
 } from "@google/genai";
 import { env } from "./env";
@@ -89,11 +91,15 @@ export class ModelTimeoutError extends Error {
 }
 
 /**
- * Longest one non-streaming call may take. The two appraisal calls run in
- * sequence inside a 60-second function, with a search between them, so each gets
- * well under that.
+ * Longest one non-streaming call may take. Each market step is its own request
+ * with a 60-second function to itself, so a slow model can be given up on and the
+ * next one tried inside it.
  */
-const CALL_TIMEOUT_MS = 45_000;
+const CALL_TIMEOUT_MS = 25_000;
+/** All the models in a chain together, so the last attempt cannot run past the function's limit. */
+const CHAIN_BUDGET_MS = 50_000;
+/** Not worth starting another model with less than this left. */
+const MIN_ATTEMPT_MS = 5_000;
 /** A whole streamed reply, verdict included. Generous: it is a ceiling, not a target. */
 const STREAM_TIMEOUT_MS = 120_000;
 
@@ -160,18 +166,30 @@ function toContents(
 const TEMPERATURE = 0.4;
 
 /**
- * Whether an error means "this model, now" rather than "this request", and so
- * whether the next model in the chain is worth trying.
+ * Why the next model in the chain is worth trying, or null when it is not.
  *
- * Quota, overload and a name the key cannot use are all about the model. A timeout
- * is not: it has already used up its 45 seconds, so a second attempt would not fit
- * in the request. A bad answer is not either: a different model would not make it
- * the same bad answer, and swapping silently would hide a prompt problem.
+ * Quota, overload and a name the key cannot use are about the model. So is a call
+ * that timed out: a free-tier model can sit on a request, and another one will not.
+ * A bad answer (not JSON, not the schema) is tried on the next model too; the
+ * error is kept, so when every model answers badly it is the bad answer that is
+ * reported, not a vague failure.
  */
-function refusalOf(error: unknown): Refusal | null {
-  if (error instanceof RateLimitError || error instanceof ModelOverloadedError) return "transient";
+function refusalOf(error: unknown): Refusal | "bad_answer" | null {
+  if (
+    error instanceof RateLimitError ||
+    error instanceof ModelOverloadedError ||
+    error instanceof ModelTimeoutError
+  ) {
+    return "transient";
+  }
   if (error instanceof ModelNotFoundError) return "missing";
+  if (error instanceof MalformedAppraisalError) return "bad_answer";
   return null;
+}
+
+/** Remembers a model only when the refusal says something about it; a bad answer says nothing. */
+function remember(model: string, refusal: Refusal | "bad_answer") {
+  if (refusal !== "bad_answer") markUnavailable(model, refusal);
 }
 
 /** What to say after every model in the chain has refused: the most useful of their errors. */
@@ -181,6 +199,9 @@ function exhausted(failures: ReadonlyArray<{ model: string; error: unknown }>): 
   // A quota error is the most actionable, so it wins over an overload.
   if (errors.some((e) => e instanceof RateLimitError)) return new RateLimitError(tried);
   if (errors.some((e) => e instanceof ModelOverloadedError)) return new ModelOverloadedError(tried);
+  if (errors.some((e) => e instanceof ModelTimeoutError)) return new ModelTimeoutError();
+  const malformed = errors.filter((e) => e instanceof MalformedAppraisalError);
+  if (malformed.length > 0) return malformed[malformed.length - 1];
   return new ModelNotFoundError(tried);
 }
 
@@ -202,25 +223,59 @@ export function triedNote(error: unknown): string {
  *
  * `attempt` throws whatever the SDK throws; it is classified here. The order puts
  * models that just refused last (see lib/model-health.ts), and a model that refuses
- * is remembered for next time.
+ * is remembered for next time. It is told how long it may take: never more than
+ * `CALL_TIMEOUT_MS`, and less once the chain has used up most of its budget.
  */
-async function withModels<T>(attempt: (model: string) => Promise<T>): Promise<T> {
+async function withModels<T>(attempt: (model: string, timeoutMs: number) => Promise<T>): Promise<T> {
   const models = inTryOrder(env.geminiModels);
   const failures: Array<{ model: string; error: unknown }> = [];
+  const started = Date.now();
 
   for (const [index, model] of models.entries()) {
+    const left = CHAIN_BUDGET_MS - (Date.now() - started);
+    if (failures.length > 0 && left < MIN_ATTEMPT_MS) break;
     try {
-      return await attempt(model);
+      return await attempt(model, Math.min(CALL_TIMEOUT_MS, left));
     } catch (raw) {
       const error = normalise(raw);
       const refusal = refusalOf(error);
       if (!refusal) throw error;
-      markUnavailable(model, refusal);
+      remember(model, refusal);
       failures.push({ model, error });
       noteRefusal(model, error, models.length - index - 1);
     }
   }
   throw exhausted(failures);
+}
+
+/**
+ * Models that answered 400 to a thinking setting. Asked once, then left alone: the
+ * setting is an optimisation, and a model that cannot take it is still a model.
+ */
+const rejectsThinking = new Set<string>();
+
+/**
+ * Thinking kept low. The default for the 3.x models is to think for a long time
+ * before the first word, which is the largest part of how slow a reply or a lookup
+ * feels, and none of these calls (a short reply, reading facts, reading listings)
+ * needs it.
+ */
+async function lowThinking<T>(
+  model: string,
+  config: GenerateContentConfig,
+  call: (config: GenerateContentConfig) => Promise<T>,
+): Promise<T> {
+  if (rejectsThinking.has(model)) return call(config);
+  try {
+    return await call({ ...config, thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } });
+  } catch (error) {
+    const rejected =
+      error instanceof ApiError && error.status === 400 && /thinking/i.test(error.message);
+    if (!rejected) throw error;
+    rejectsThinking.add(model);
+    console.warn(`Gemini model ${model} does not take a thinking level; asking without one`);
+    return call(config);
+  }
 }
 
 /**
@@ -242,15 +297,17 @@ export async function* streamReply(
   for (const [index, model] of models.entries()) {
     let spoke = false;
     try {
-      const stream = await getClient().models.generateContentStream({
-        model,
-        contents: toContents(transcript, photos, stage !== "verdict"),
-        config: {
-          systemInstruction: systemInstruction(stage, context),
-          temperature: TEMPERATURE,
-          abortSignal: AbortSignal.timeout(STREAM_TIMEOUT_MS),
-        },
-      });
+      const stream = await lowThinking(model, {
+        systemInstruction: systemInstruction(stage, context),
+        temperature: TEMPERATURE,
+        abortSignal: AbortSignal.timeout(STREAM_TIMEOUT_MS),
+      }, (config) =>
+        getClient().models.generateContentStream({
+          model,
+          contents: toContents(transcript, photos, stage !== "verdict"),
+          config,
+        }),
+      );
       for await (const chunk of stream) {
         const text = chunk.text;
         if (text) {
@@ -263,7 +320,7 @@ export async function* streamReply(
       const error = normalise(raw);
       const refusal = refusalOf(error);
       if (spoke || !refusal) throw error;
-      markUnavailable(model, refusal);
+      remember(model, refusal);
       failures.push({ model, error });
       noteRefusal(model, error, models.length - index - 1);
     }
@@ -284,24 +341,30 @@ export async function extractFacts(
   photos: Photo[],
   intake: Intake,
 ): Promise<ItemFacts> {
-  const response = await withModels((model) =>
-    getClient().models.generateContent({
+  return withModels(async (model, timeoutMs) => {
+    const response = await lowThinking(
       model,
-      contents: [
-        ...toContents(transcript, photos, true),
-        { role: "user", parts: [{ text: FACTS_REQUEST }] },
-      ],
-      config: {
+      {
         systemInstruction: factsSystem(intake),
         temperature: 0,
         responseMimeType: "application/json",
         responseJsonSchema: FACTS_SCHEMA,
-        abortSignal: AbortSignal.timeout(CALL_TIMEOUT_MS),
+        abortSignal: AbortSignal.timeout(timeoutMs),
       },
-    }),
-  );
-
-  return parseFacts(response.text);
+      (config) =>
+        getClient().models.generateContent({
+          model,
+          contents: [
+            ...toContents(transcript, photos, true),
+            { role: "user", parts: [{ text: FACTS_REQUEST }] },
+          ],
+          config,
+        }),
+    );
+    // Parsed inside the attempt: an answer that is not the schema is a reason to
+    // ask the next model, not to give up.
+    return parseFacts(response.text, env.vndPerUsd);
+  });
 }
 
 /**
@@ -320,21 +383,25 @@ export async function readListings(
 ): Promise<MarketReading> {
   if (sources.length === 0) return EMPTY_READING;
 
-  const response = await withModels((model) =>
-    getClient().models.generateContent({
+  return withModels(async (model, timeoutMs) => {
+    const response = await lowThinking(
       model,
-      contents: readingPrompt(facts, sources),
-      config: {
+      {
         systemInstruction: EXTRACT_INSTRUCTION,
         temperature: 0,
         responseMimeType: "application/json",
         responseJsonSchema: extractionSchema(sources.length),
-        abortSignal: AbortSignal.timeout(CALL_TIMEOUT_MS),
+        abortSignal: AbortSignal.timeout(timeoutMs),
       },
-    }),
-  );
-
-  return parseReading(response.text);
+      (config) =>
+        getClient().models.generateContent({
+          model,
+          contents: readingPrompt(facts, sources),
+          config,
+        }),
+    );
+    return parseReading(response.text);
+  });
 }
 
 /** The SDK reports a cancelled call under a few names, depending on where it was caught. */

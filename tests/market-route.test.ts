@@ -1,5 +1,5 @@
 /**
- * The appraise route, run for real with the model SDK and the search service
+ * The market route, run for real with the model SDK and the search service
  * replaced.
  *
  * Replacing them at that boundary is the point: the claims worth proving are about
@@ -27,9 +27,11 @@ vi.mock("@/lib/search", async (importOriginal) => {
   return { ...actual, searchListings };
 });
 
-const { POST: appraise } = await import("@/app/api/appraise/route");
+const { POST: market } = await import("@/app/api/market/route");
+const { computeAppraisal } = await import("@/lib/pricing");
 const { ApiError } = await import("@google/genai");
 const { FACT_COUNT } = await import("@/lib/stages");
+const { MAX_SOURCES } = await import("@/lib/sources");
 const { resetBudget } = await import("@/lib/budget");
 const { SearchFailedError, SearchQuotaError, SearchRateLimitError, SearchUnavailableError } =
   await import("@/lib/search");
@@ -90,6 +92,12 @@ const hits = PAGES.map((page) => ({
   rawContent: null,
 }));
 
+/** Six priced pages: enough that the search is not widened. */
+const sixPages = [
+  ...hits,
+  { title: "iPhone 13 six", url: "https://www.ebay.com/itm/6", content: "iPhone 13. $450.", rawContent: null },
+];
+
 const listings = PAGES.map((page, index) => ({
   title: `iPhone 13 #${index}`,
   priceText: page.price,
@@ -111,11 +119,11 @@ function scripted(
     results?: unknown;
   } = {},
 ) {
-  searchListings.mockResolvedValue({
+  searchListings.mockImplementation(async (queries: Array<{ query: string }>) => ({
     results: overrides.results ?? hits,
-    queries: ["iPhone 13 128GB used sold price", "iPhone 13 128GB used for sale"],
-    credits: 2,
-  });
+    queries: queries.map((q) => q.query),
+    credits: queries.length,
+  }));
   generateContent.mockImplementation(async (request: Request) => {
     const properties = (request.config?.responseJsonSchema as { properties: object }).properties;
     if (!("listings" in properties)) return { text: JSON.stringify(overrides.facts ?? FACTS) };
@@ -131,15 +139,46 @@ function scripted(
   });
 }
 
-async function post(payload: unknown) {
-  const response = await appraise(
-    new Request("http://localhost/api/appraise", {
+async function step(payload: unknown) {
+  const response = await market(
+    new Request("http://localhost/api/market", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
   );
   return { status: response.status, json: await response.json() };
+}
+
+/**
+ * The whole lookup, the way the browser runs it: the three steps in order, then the
+ * figures computed from the listings against a locked price. Stops at the first step
+ * that fails and returns its answer.
+ */
+async function post(payload: {
+  intake: unknown;
+  photos: unknown;
+  askingPrice?: { usd: number };
+  transcript: unknown;
+}) {
+  const { intake, photos, transcript } = payload;
+  const facts = await step({ step: "facts", intake, photos, transcript });
+  if (facts.status !== 200) return facts;
+  const search = await step({ step: "search", item: facts.json.item, transcript });
+  if (search.status !== 200) return search;
+  const read = await step({ step: "read", item: facts.json.item, sources: search.json.sources, transcript });
+  if (read.status !== 200) return read;
+
+  return {
+    status: 200,
+    json: {
+      ...computeAppraisal(read.json.raw, payload.askingPrice?.usd ?? LOCKED),
+      item: facts.json.item,
+      raw: read.json.raw,
+      queries: search.json.queries,
+      backup: [...facts.json.backup, ...read.json.backup],
+    },
+  };
 }
 
 const modelRequests = () => generateContent.mock.calls.map(([request]) => request as Request);
@@ -152,7 +191,7 @@ beforeEach(() => {
   scripted();
 });
 
-describe("a healthy appraisal", () => {
+describe("a healthy lookup", () => {
   it("returns the market, the suggestion and the gap, all computed here", async () => {
     const { status, json } = await post(body);
 
@@ -163,10 +202,14 @@ describe("a healthy appraisal", () => {
     expect(json.overpriced).toBe(true); // 637 against 300
     expect(json.item.purchasePrice).toBe(PAID);
     expect(json.raw.listings).toHaveLength(5);
+    // Five priced pages is thin, so the search was widened once.
     expect(json.queries).toEqual([
       "iPhone 13 128GB used sold price",
       "iPhone 13 128GB used for sale",
+      "iPhone 13 128GB cũ",
+      "iPhone 13 used price",
     ]);
+    expect(json.raw.vndPerUsd).toBe(26_000);
     expect(json).not.toHaveProperty("searchEntryPoint");
   });
 
@@ -265,12 +308,12 @@ describe("what leaves the process", () => {
   it("never puts what they paid or what they locked in into a search query", async () => {
     await post(body);
 
-    const [queries] = searchListings.mock.calls[0];
-    expect(queries).toHaveLength(2);
-    for (const query of queries as string[]) {
-      expect(query).not.toContain(String(PAID));
-      expect(query).not.toContain(String(LOCKED));
-      expect(query).not.toContain("$");
+    for (const [queries] of searchListings.mock.calls) {
+      for (const { query } of queries as Array<{ query: string }>) {
+        expect(query).not.toContain(String(PAID));
+        expect(query).not.toContain(String(LOCKED));
+        expect(query).not.toContain("$");
+      }
     }
   });
 
@@ -296,7 +339,7 @@ describe("what leaves the process", () => {
     });
     await post(body);
 
-    const [queries] = searchListings.mock.calls[0];
+    const queries = searchListings.mock.calls.map(([q]) => q);
     // The sources below the item legitimately carry dollar amounts: those are the
     // listings. Only what describes the seller's item must be free of them.
     const itemBlock = String(modelRequests().at(-1)!.contents).split("Sources:")[0];
@@ -370,8 +413,8 @@ describe("refusals", () => {
     expect(searchListings).not.toHaveBeenCalled();
   });
 
-  it("refuses before every fact has been asked about", async () => {
-    const { status, json } = await post({ ...body, transcript: transcript.slice(0, (FACT_COUNT - 1) * 2) });
+  it("refuses before the assistant has said anything", async () => {
+    const { status, json } = await post({ ...body, transcript: transcript.slice(0, 1) });
     expect(status).toBe(409);
     expect(json.error).toBe("out_of_order");
     expect(generateContent).not.toHaveBeenCalled();
@@ -391,8 +434,31 @@ describe("refusals", () => {
     expect(generateContent).not.toHaveBeenCalled();
   });
 
-  it("refuses with no locked price", async () => {
-    const { status } = await post({ ...body, askingPrice: undefined });
+  it("does not need a locked price: no step is ever shown one", async () => {
+    const { askingPrice: _ignored, ...withoutPrice } = body;
+    void _ignored;
+    expect((await post(withoutPrice)).status).toBe(200);
+  });
+
+  it("does not ask the questions to run their course by count: one reply is enough", async () => {
+    // The assistant decides when it has the facts; `facts` is the check on it.
+    const { status } = await post({ ...body, transcript: transcript.slice(0, 2) });
+    expect(status).toBe(200);
+  });
+
+  it("rejects a step it does not know, and a body that is not one", async () => {
+    expect((await step({ step: "price", transcript })).status).toBe(400);
+    expect((await step(null)).status).toBe(400);
+    expect((await step({ step: "read", item: FACTS, sources: "none", transcript })).status).toBe(400);
+  });
+
+  it("rejects more sources than the model is ever given", async () => {
+    const sources = Array.from({ length: MAX_SOURCES + 1 }, (_, n) => ({
+      url: `https://a.example/${n}`,
+      title: "t",
+      text: "$5",
+    }));
+    const { status } = await step({ step: "read", item: FACTS, sources, transcript });
     expect(status).toBe(400);
     expect(generateContent).not.toHaveBeenCalled();
   });
@@ -412,24 +478,51 @@ describe("the daily budget", () => {
     delete process.env.DAILY_MODEL_BUDGET;
   });
 
-  it("refuses with budget_exhausted before calling anything, and does not spend", async () => {
-    process.env.DAILY_SEARCH_BUDGET = "3"; // one appraisal costs two
+  it("is counted by the queries actually run: three, and a fourth when the first round was thin", async () => {
+    process.env.DAILY_SEARCH_BUDGET = "10";
+    await post(body); // five priced pages: thin, so widened
+    expect((await import("@/lib/budget")).remaining("search")).toBe(10 - 4);
 
-    expect((await post(body)).status).toBe(200);
-    const refused = await post(body);
+    resetBudget();
+    scripted({ results: sixPages });
+    await post(body); // six priced pages: enough, so not widened
+    expect((await import("@/lib/budget")).remaining("search")).toBe(10 - 3);
+  });
+
+  it("refuses with budget_exhausted before searching, and does not spend", async () => {
+    process.env.DAILY_SEARCH_BUDGET = "5"; // a lookup costs three, or four when widened
+
+    expect((await post(body)).status).toBe(200); // spends four
+    searchListings.mockClear();
+    const refused = await step({ step: "search", item: FACTS, transcript });
 
     expect(refused.status).toBe(429);
     expect(refused.json.error).toBe("budget_exhausted");
-    expect(generateContent).toHaveBeenCalledTimes(2); // only the first appraisal's
+    expect(searchListings).not.toHaveBeenCalled();
+  });
+
+  it("skips the widening quietly when only the first round is affordable", async () => {
+    process.env.DAILY_SEARCH_BUDGET = "3";
+    const { status, json } = await step({ step: "search", item: FACTS, transcript });
+    expect(status).toBe(200);
     expect(searchListings).toHaveBeenCalledTimes(1);
+    expect(json.queries).toHaveLength(3);
   });
 
   it("refuses when the model budget is the one that is short", async () => {
     process.env.DAILY_MODEL_BUDGET = "1";
-    const { status, json } = await post(body);
-    expect(status).toBe(429);
-    expect(json.error).toBe("budget_exhausted");
-    expect(searchListings).not.toHaveBeenCalled();
+    const first = await post(body); // facts takes the one call; the reading is refused
+    expect(first.status).toBe(429);
+    expect(first.json.error).toBe("budget_exhausted");
+    const facts = await step({ step: "facts", intake: body.intake, photos: body.photos, transcript });
+    expect(facts.status).toBe(429);
+  });
+
+  it("charges a reading nothing when there is nothing to read", async () => {
+    process.env.DAILY_MODEL_BUDGET = "1";
+    scripted({ results: [] });
+    expect((await post(body)).status).toBe(200);
+    expect(generateContent).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -460,6 +553,14 @@ describe("failures", () => {
     expect(generateContent).toHaveBeenCalledTimes(1); // the facts only
   });
 
+  it("explains why, in the reason, and logs it for whoever is running this", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    searchListings.mockRejectedValue(new SearchQuotaError(432));
+    const { json } = await post(body);
+    expect(json.reason).toMatch(/monthly credits/);
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/market search refused \(search_quota, 429\)/));
+  });
+
   it("reports an exhausted model quota as 429", async () => {
     generateContent.mockRejectedValue(new ApiError({ message: "quota", status: 429 }));
     const { status, json } = await post(body);
@@ -475,13 +576,28 @@ describe("failures", () => {
     expect(json.reason).toMatch(/search service/);
   });
 
-  it("answers a model that went quiet with a 504 and says so, rather than hanging", async () => {
+  it("answers a model that went quiet with a 504 once every model has, and says so", async () => {
     generateContent.mockRejectedValue(Object.assign(new Error("aborted"), { name: "TimeoutError" }));
     const { status, json } = await post(body);
     expect(status).toBe(504);
     expect(json.error).toBe("appraisal_failed");
     expect(json.reason).toMatch(/too long/);
     expect(searchListings).not.toHaveBeenCalled();
+    // Each model in the chain was given its chance, inside the one step.
+    expect(generateContent.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("gets past a model that hangs by asking the next one", async () => {
+    const { env } = await import("@/lib/env");
+    generateContent.mockImplementation(async (request: Request & { model: string }) => {
+      if (request.model === env.geminiModels[0]) {
+        throw Object.assign(new Error("aborted"), { name: "TimeoutError" });
+      }
+      return { text: JSON.stringify(FACTS) };
+    });
+    const { status, json } = await step({ step: "facts", intake: body.intake, photos: body.photos, transcript });
+    expect(status).toBe(200);
+    expect(json.item.model).toBe("iPhone 13");
   });
 
   it("explains a reading that does not fit the schema", async () => {
@@ -713,8 +829,8 @@ describe("the backup model", () => {
     expect(reading.body).not.toContain(String(PAID));
     expect(facts.system).toMatch(/cannot see their photos/);
     // and the search queries are built the same way whichever model wrote the facts
-    for (const query of searchListings.mock.calls[0][0] as string[]) {
-      expect(query).not.toMatch(/849|637|\$/);
+    for (const [queries] of searchListings.mock.calls) {
+      for (const { query } of queries as Array<{ query: string }>) expect(query).not.toMatch(/849|637|\$/);
     }
   });
 
@@ -768,7 +884,7 @@ describe("the backup model", () => {
     expect(fetchStub).not.toHaveBeenCalled();
   });
 
-  it("does not take over for a timeout or a bad answer", async () => {
+  it("does not take over for a timeout or a bad answer, once the whole Gemini chain has had it", async () => {
     const fetchStub = vi.fn();
     vi.stubGlobal("fetch", fetchStub);
 
@@ -780,5 +896,195 @@ describe("the backup model", () => {
     expect((await post(body)).status).toBe(502);
 
     expect(fetchStub).not.toHaveBeenCalled();
+  });
+});
+
+describe("the facts step", () => {
+  const facts = () => step({ step: "facts", intake: body.intake, photos: body.photos, transcript });
+
+  it("returns only the item and which backup read it", async () => {
+    const { status, json } = await facts();
+    expect(status).toBe(200);
+    expect(Object.keys(json).sort()).toEqual(["backup", "item"]);
+    expect(searchListings).not.toHaveBeenCalled();
+    expect(generateContent).toHaveBeenCalledTimes(1);
+  });
+
+  it("converts a price given in đồng in code, at the configured rate", async () => {
+    process.env.VND_PER_USD = "25000";
+    try {
+      scripted({ facts: { ...FACTS, purchasePrice: 15_000_000, purchaseCurrency: "VND" } });
+      const { status, json } = await facts();
+      expect(status).toBe(200);
+      expect(json.item.purchasePrice).toBe(600);
+    } finally {
+      delete process.env.VND_PER_USD;
+    }
+  });
+
+  it("does not fail, every time, over a price the model left in đồng without saying so", async () => {
+    // "mua 15 triệu" read as 15,000,000 dollars used to break the schema, and so every retry.
+    scripted({ facts: { ...FACTS, purchasePrice: 15_000_000 } });
+    const { status, json } = await facts();
+    expect(status).toBe(200);
+    expect(json.item.purchasePrice).toBeNull();
+    expect(json.item.model).toBe("iPhone 13");
+  });
+
+  it("asks for the price in the currency it was said in, never converted by the model", async () => {
+    await facts();
+    const schema = JSON.stringify(modelRequests()[0].config?.responseJsonSchema);
+    expect(schema).toContain("purchaseCurrency");
+    expect(schema).toMatch(/15000000/);
+  });
+});
+
+describe("the search step", () => {
+  const search = (item: unknown = FACTS) => step({ step: "search", item, transcript });
+
+  it("runs three queries in one call: two US and one Vietnamese, each on its own sites", async () => {
+    scripted({ results: sixPages });
+    const { json } = await search();
+
+    expect(searchListings).toHaveBeenCalledTimes(1);
+    const [queries] = searchListings.mock.calls[0];
+    expect(queries.map((q: { query: string }) => q.query)).toEqual([
+      "iPhone 13 128GB used sold price",
+      "iPhone 13 128GB used for sale",
+      "iPhone 13 128GB cũ",
+    ]);
+    expect(queries[0].domains).toContain("ebay.com");
+    expect(queries[2].domains).toEqual(["chotot.com", "shopee.vn", "lazada.vn"]);
+    expect(json.queries).toHaveLength(3);
+  });
+
+  it("numbers the sources the search returned and nothing else", async () => {
+    scripted({ results: sixPages });
+    const { json } = await search();
+    expect(json.sources.map((s: { url: string }) => s.url)).toEqual(sixPages.map((p) => p.url));
+  });
+
+  it("widens once, on any site, when fewer than six sources carry a price", async () => {
+    const { json } = await search();
+    expect(searchListings).toHaveBeenCalledTimes(2);
+    const [wider] = searchListings.mock.calls[1];
+    expect(wider).toEqual([{ query: "iPhone 13 used price", domains: [] }]);
+    expect(json.queries.at(-1)).toBe("iPhone 13 used price");
+  });
+
+  it("keeps the first round when the widening fails", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    searchListings
+      .mockImplementationOnce(async (queries: Array<{ query: string }>) => ({
+        results: hits,
+        queries: queries.map((q) => q.query),
+        credits: 3,
+      }))
+      .mockRejectedValueOnce(new SearchFailedError("The search timed out"));
+    const { status, json } = await search();
+    expect(status).toBe(200);
+    expect(json.sources).toHaveLength(5);
+    expect(json.queries).toHaveLength(3);
+  });
+
+  it("never searches the price they paid, in either currency", async () => {
+    await search({ ...FACTS, searchQuery: "iPhone 13 mua 15 triệu", variant: "bought for 849 dollars" });
+    for (const [queries] of searchListings.mock.calls) {
+      for (const { query } of queries as Array<{ query: string }>) {
+        expect(query).not.toMatch(/849|15|triệu|dollars/);
+      }
+    }
+  });
+
+  it("sends the person back to the questions when there is no model to search for", async () => {
+    const { status, json } = await search({ ...FACTS, model: "" });
+    expect(status).toBe(422);
+    expect(json.error).toBe("needs_identity");
+    expect(searchListings).not.toHaveBeenCalled();
+  });
+
+  it("calls no model", async () => {
+    await search();
+    expect(generateContent).not.toHaveBeenCalled();
+  });
+});
+
+describe("the read step, with listings in đồng", () => {
+  const dong = [
+    { url: "https://www.chotot.com/mua-ban/1.htm", price: "5.500.000 ₫" },
+    { url: "https://www.chotot.com/mua-ban/2.htm", price: "5.250.000 ₫" },
+    { url: "https://shopee.vn/iphone-13-i.1.2", price: "5,0 triệu" },
+    { url: "https://www.lazada.vn/products/iphone-13-i1-s2.html", price: "5.750.000đ" },
+    { url: "https://www.ebay.com/itm/9", price: "US $215.00" },
+  ];
+  const dongHits = dong.map((page) => ({
+    title: `iPhone 13 cũ ${page.url}`,
+    url: page.url,
+    content: `iPhone 13 128GB cũ. ${page.price}.`,
+    rawContent: null,
+  }));
+  const dongListings = dong.map((page, index) => ({
+    title: `iPhone 13 #${index}`,
+    priceText: page.price,
+    kind: "active",
+    condition: "good",
+    platform: "?",
+    sourceIndex: index,
+  }));
+
+  const read = async () => {
+    process.env.VND_PER_USD = "25000";
+    try {
+      const sources = (await step({ step: "search", item: FACTS, transcript })).json.sources;
+      return await step({ step: "read", item: FACTS, sources, transcript });
+    } finally {
+      delete process.env.VND_PER_USD;
+    }
+  };
+
+  beforeEach(() => {
+    scripted({
+      results: dongHits,
+      reading: { listings: dongListings, position: "typical", positionEvidence: "" },
+    });
+  });
+
+  it("verifies each price in đồng against the page, and names the Vietnamese platforms from the URL", async () => {
+    const { status, json } = await read();
+    expect(status).toBe(200);
+    expect(json.raw.listings.map((l: { platform: string }) => l.platform)).toEqual([
+      "Chợ Tốt", "Chợ Tốt", "Shopee", "Lazada", "eBay",
+    ]);
+    expect(json.raw.listings.every((l: { match: string }) => l.match === "verified")).toBe(true);
+  });
+
+  it("carries the rate it will be converted at, so the browser and the verdict agree", async () => {
+    const { json } = await read();
+    expect(json.raw.vndPerUsd).toBe(25_000);
+
+    const appraisal = computeAppraisal(json.raw, 300);
+    // 220, 210, 200, 230 and 215 dollars: one median, in dollars.
+    expect(appraisal.market).toMatchObject({ tier: "full", count: 5, median: 215 });
+    expect(appraisal.listings.find((l) => l.priceText === "5.500.000 ₫")?.price).toBe(220);
+  });
+
+  it("is never shown what they paid, and makes one model call", async () => {
+    await read();
+    expect(modelRequests()).toHaveLength(1);
+    expect(JSON.stringify(modelRequests()[0])).not.toContain(String(PAID));
+  });
+
+  it("tells the model to copy đồng prices as written and not to convert them", async () => {
+    await read();
+    const system = JSON.stringify(modelRequests()[0].config);
+    expect(system).toContain("Chợ Tốt, Shopee and Lazada");
+    expect(system).toMatch(/Đã bán/);
+    expect(system).toMatch(/you never do/);
+  });
+
+  it("does not need a transcript that has a price in it, or any price at all", async () => {
+    const { status } = await step({ step: "read", item: FACTS, sources: [], transcript });
+    expect(status).toBe(200);
+    expect(generateContent).not.toHaveBeenCalled();
   });
 });

@@ -92,6 +92,102 @@ describe("parsePriceText", () => {
   });
 });
 
+describe("parsePriceText, in đồng", () => {
+  const rate = 25_000;
+  const usd = (text: string) => parsePriceText(text, rate);
+
+  it("reads the Vietnamese ways of writing a price and converts them", () => {
+    expect(usd("5.500.000 ₫")).toBe(220);
+    expect(usd("5.500.000đ")).toBe(220);
+    expect(usd("5.500.000 đ")).toBe(220);
+    expect(usd("5,500,000 VND")).toBe(220);
+    expect(usd("₫5.500.000")).toBe(220);
+    expect(usd("VND 5500000")).toBe(220);
+    expect(usd("5500000 đồng")).toBe(220);
+  });
+
+  it("reads triệu and tr, with a decimal comma or point", () => {
+    expect(usd("5,5 triệu")).toBe(220);
+    expect(usd("5.5tr")).toBe(220);
+    expect(usd("5.5 tr")).toBe(220);
+    expect(usd("15 triệu")).toBe(600);
+    expect(usd("15 củ")).toBe(600);
+    expect(usd("1,2 tỷ")).toBe(48_000);
+    expect(usd("5tr5")).toBe(220);
+  });
+
+  it("does not take the thousands dots of a VN price for cents, or the reverse", () => {
+    expect(usd("5.500 ₫")).toBeCloseTo(5500 / 25_000, 2);
+    expect(parsePriceText("$5.50")).toBe(5.5);
+    expect(usd("5.500 ₫")).not.toBe(5.5);
+  });
+
+  it("uses the default rate when none is given", () => {
+    expect(parsePriceText("26.000.000 ₫")).toBe(1000);
+  });
+
+  it("does not guess at a range, or a price beside another price", () => {
+    expect(usd("5 triệu đến 6 triệu")).toBeNull();
+    expect(usd("5.500.000 ₫ (giá cũ 6.500.000 ₫)")).toBeNull();
+    expect(usd("$200 hoặc 5.500.000 ₫")).toBeNull();
+  });
+
+  it("takes the item price when shipping is listed beside it", () => {
+    expect(usd("5.500.000 ₫ + 30.000 ₫ phí ship")).toBe(220);
+  });
+
+  it("does not read a word that only starts like a unit, or a bare number", () => {
+    expect(usd("5 trong 1")).toBeNull();
+    expect(usd("5.500.000")).toBeNull();
+    expect(usd("Liên hệ")).toBeNull();
+  });
+
+  it("still drops the currencies it does not know", () => {
+    expect(usd("£300")).toBeNull();
+    expect(usd("¥5000")).toBeNull();
+  });
+});
+
+describe("a market in dollars and đồng", () => {
+  it("puts them in one median, at the rate the input carries", () => {
+    const priced = (priceText: string): GroundedListing => ({ ...listing(1), priceText });
+    const appraisal = computeAppraisal(
+      {
+        listings: [
+          priced("$200"),
+          priced("5.500.000 ₫"),
+          priced("5.250.000 ₫"),
+          priced("$210"),
+          priced("5,25 triệu"),
+        ],
+        newPrice: null,
+        position: "typical",
+        positionEvidence: "",
+        vndPerUsd: 25_000,
+      },
+      300,
+    );
+    // 220, 210, 210, 200, 200 -> median 210
+    expect(appraisal.market.count).toBe(5);
+    expect(appraisal.market.median).toBe(210);
+    expect(appraisal.listings.filter((l) => l.priceText.includes("₫")).map((l) => l.price)).toEqual([
+      220, 210,
+    ]);
+  });
+
+  it("changes the figures when the rate changes, which is why the rate travels with the listings", () => {
+    const input = (vndPerUsd: number) => ({
+      listings: many([100, 100, 100, 100, 100]).map((l) => ({ ...l, priceText: "2.600.000 ₫" })),
+      newPrice: null,
+      position: "typical" as const,
+      positionEvidence: "",
+      vndPerUsd,
+    });
+    expect(computeAppraisal(input(26_000), 100).market.median).toBe(100);
+    expect(computeAppraisal(input(20_000), 100).market.median).toBe(130);
+  });
+});
+
 describe("median and quartiles", () => {
   it("takes the middle, or the mean of the middle two", () => {
     expect(median([3, 1, 2])).toBe(2);
@@ -379,7 +475,7 @@ describe("describeAppraisal", () => {
 });
 
 describe("appraisalInputSchema", () => {
-  it("accepts the shape the appraise route hands out and fills the defaults", () => {
+  it("accepts the shape the market route hands out and fills the defaults", () => {
     const parsed = appraisalInputSchema.parse({
       item: { searchQuery: "iphone 13", model: "iPhone 13", condition: "good" },
       listings: many([100]),
@@ -389,6 +485,7 @@ describe("appraisalInputSchema", () => {
     expect(parsed.newPrice).toBeNull();
     expect(parsed.item.included).toEqual([]);
     expect(parsed.item.purchasePrice).toBeNull();
+    expect(parsed.vndPerUsd).toBe(26_000);
   });
 
   it("rejects a position the app has no mapping for", () => {
@@ -400,6 +497,23 @@ describe("appraisalInputSchema", () => {
         positionEvidence: "",
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("groundNewPrice, in đồng", () => {
+  const sources: Source[] = [
+    { url: "https://shopee.vn/x-i.1.2", title: "new", text: "iPhone 13 mới\n13.000.000 ₫" },
+  ];
+
+  it("converts a new price in đồng at the rate it is given", () => {
+    expect(groundNewPrice({ priceText: "13.000.000 ₫", sourceIndex: 0 }, sources, 26_000)).toEqual({
+      price: 500,
+      url: "https://shopee.vn/x-i.1.2",
+    });
+  });
+
+  it("still refuses one the page did not show", () => {
+    expect(groundNewPrice({ priceText: "14.000.000 ₫", sourceIndex: 0 }, sources, 26_000)).toBeNull();
   });
 });
 
