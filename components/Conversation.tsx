@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { BotAvatar } from "@/components/BotAvatar";
 import { IntakeForm } from "@/components/IntakeForm";
 import { MarketCard } from "@/components/MarketCard";
 import { PhotoPicker, Thumb } from "@/components/PhotoPicker";
@@ -44,6 +45,11 @@ import {
  * person's behalf to start a phase they did not have to type into.
  */
 type StreamMessage = TranscriptMessage & { hidden?: boolean };
+
+/** The assistant speaks from a white bubble; the person from navy (`bg-bubble`). */
+const BOT_BUBBLE =
+  "w-fit max-w-[92%] rounded-3xl rounded-tl-lg bg-surface px-5 py-3.5 text-[15px] leading-relaxed shadow-soft";
+const CARD = "rounded-3xl bg-surface shadow-soft";
 
 const VERDICT_OPENER = "I've seen the market. What do you suggest?";
 
@@ -479,11 +485,14 @@ export function Conversation() {
 
   return (
     <div className="flex h-dvh flex-col">
-      <header className="shrink-0 border-b border-rule bg-surface/80 backdrop-blur">
-        <div className="mx-auto flex w-full max-w-2xl flex-col gap-3 px-5 py-3">
+      <header className="shrink-0">
+        <div className="mx-auto flex w-full max-w-2xl flex-col gap-3 px-5 pt-3 pb-2">
           <div className="flex items-center justify-between gap-4">
-            <h1 className="text-sm font-semibold tracking-tight">
-              VIBE <span className="font-normal text-ink-muted">· Resale price assistant</span>
+            <h1 className="flex items-center gap-2.5 text-sm font-semibold tracking-tight">
+              <BotAvatar size={30} />
+              <span>
+                VIBE <span className="font-normal text-ink-muted">· Resale price assistant</span>
+              </span>
             </h1>
             <div className="flex items-center gap-3">
               <p className="text-xs text-ink-muted">{STAGE_LABELS[phase]}</p>
@@ -498,7 +507,7 @@ export function Conversation() {
                   <li
                     key={step}
                     aria-current={phase === step ? "step" : undefined}
-                    className={`h-0.5 flex-1 rounded-full transition-colors ${
+                    className={`h-1 flex-1 rounded-full transition-colors ${
                       reached ? "bg-accent" : "bg-track"
                     }`}
                   >
@@ -537,6 +546,9 @@ export function Conversation() {
               message={message}
               streaming={streaming}
               photoById={photoById}
+              // The opening reminders are the assistant's first turn, with its face
+              // on them, so the first reply after them carries on from it.
+              startsRun={startsRun(before, index, false)}
             />
           ))}
 
@@ -558,6 +570,7 @@ export function Conversation() {
                 }}
                 streaming={false}
                 photoById={photoById}
+                startsRun
               />
               <MarketCard
                 appraisal={appraisal}
@@ -574,6 +587,7 @@ export function Conversation() {
               message={message}
               streaming={streaming}
               photoById={photoById}
+              startsRun={startsRun(after, index, true)}
             />
           ))}
 
@@ -595,7 +609,7 @@ export function Conversation() {
                     phase === "intake" ? intakePhotos.map((p) => p.id) : [],
                 });
               }}
-              className="self-start rounded-full border border-rule-strong px-4 py-2 text-sm font-medium transition-colors hover:border-ink"
+              className="btn-ghost self-start px-5 py-2 text-sm font-medium"
             >
               Try again
             </button>
@@ -606,8 +620,8 @@ export function Conversation() {
       </div>
 
       {composing && intake && !needsRetry ? (
-        <footer className="shrink-0 border-t border-rule bg-surface/80 backdrop-blur">
-          <div className="mx-auto w-full max-w-2xl px-5 py-4">
+        <footer className="shrink-0">
+          <div className="mx-auto w-full max-w-2xl px-5 pt-2 pb-4">
             {attachments.length > 0 ? (
               <div className="mb-2 flex flex-wrap gap-2">
                 {attachments.map((photo, index) => (
@@ -626,7 +640,7 @@ export function Conversation() {
                 ))}
               </div>
             ) : null}
-            <div className="flex items-end gap-2 rounded-2xl border border-rule bg-surface px-3 py-2 focus-within:border-rule-strong">
+            <div className="flex items-end gap-2 rounded-[1.75rem] bg-surface px-2.5 py-2 shadow-soft ring-1 ring-transparent transition-shadow focus-within:ring-action/40">
               <PhotoPicker
                 compact
                 photos={attachments}
@@ -647,15 +661,18 @@ export function Conversation() {
                 disabled={streaming}
                 placeholder="Type your answer…"
                 aria-label="Your answer"
-                className="max-h-40 min-h-9 flex-1 resize-none bg-transparent py-1.5 text-[15px] outline-none placeholder:text-ink-muted disabled:opacity-50"
+                className="max-h-40 min-h-9 flex-1 resize-none bg-transparent px-1 py-1.5 text-[15px] outline-none placeholder:text-ink-muted disabled:opacity-50"
               />
               <button
                 type="button"
                 onClick={submitDraft}
                 disabled={streaming || !draft.trim()}
-                className="mb-0.5 shrink-0 rounded-full bg-ink px-4 py-2 text-sm font-medium text-plane transition-opacity hover:opacity-90 disabled:opacity-30"
+                aria-label="Send"
+                className="mb-0.5 flex size-9 shrink-0 items-center justify-center rounded-full bg-bubble text-bubble-ink transition-colors disabled:bg-action-wash disabled:text-action"
               >
-                Send
+                <svg viewBox="0 0 24 24" className="size-[18px]" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="M12 19V5M5.5 11.5 12 5l6.5 6.5" />
+                </svg>
               </button>
             </div>
             <div className="mt-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
@@ -671,7 +688,7 @@ export function Conversation() {
                   type="button"
                   disabled={streaming || appraising}
                   onClick={() => void requestAppraisal(askingPrice)}
-                  className="rounded-full border border-rule-strong px-3.5 py-1.5 text-xs font-medium transition-colors hover:border-ink disabled:opacity-40"
+                  className="btn-ghost px-4 py-1.5 text-xs font-medium"
                 >
                   {appraising ? "Looking up…" : "Look up the market"}
                 </button>
@@ -680,7 +697,7 @@ export function Conversation() {
                   type="button"
                   disabled={streaming}
                   onClick={() => setPhase("commit")}
-                  className="rounded-full border border-rule-strong px-3.5 py-1.5 text-xs font-medium transition-colors hover:border-ink disabled:opacity-40"
+                  className="btn-ghost px-4 py-1.5 text-xs font-medium"
                 >
                   I’m ready to set my price
                 </button>
@@ -693,14 +710,29 @@ export function Conversation() {
   );
 }
 
+/**
+ * Whether the assistant's turn at `index` opens a run, and so gets its face above
+ * it. A hidden opener is the app speaking for the person, so it does not break a
+ * run; `atStart` is what an empty history before it means.
+ */
+function startsRun(list: StreamMessage[], index: number, atStart: boolean): boolean {
+  for (let i = index - 1; i >= 0; i--) {
+    if (list[i].hidden) continue;
+    return list[i].role !== "model";
+  }
+  return atStart;
+}
+
 function Turn({
   message,
   streaming,
   photoById,
+  startsRun: opensRun = true,
 }: {
   message: StreamMessage;
   streaming: boolean;
   photoById: Map<string, Photo>;
+  startsRun?: boolean;
 }) {
   if (message.hidden) return null;
 
@@ -717,30 +749,38 @@ function Turn({
             ))}
           </div>
         ) : null}
-        <p className="rounded-2xl rounded-br-md bg-bubble px-4 py-2.5 text-[15px] leading-relaxed text-bubble-ink">
+        <p className="rounded-3xl rounded-br-lg bg-bubble px-5 py-3 text-[15px] leading-relaxed text-bubble-ink shadow-soft">
           {message.text}
         </p>
       </div>
     );
   }
 
+  const face = opensRun ? <BotAvatar size={40} /> : null;
+
   if (!message.text) {
     return streaming ? (
-      <p className="flex gap-1 py-1" aria-label="Thinking">
-        {[0, 1, 2].map((dot) => (
-          <span
-            key={dot}
-            className="size-1.5 animate-pulse rounded-full bg-ink-muted"
-            style={{ animationDelay: `${dot * 160}ms` }}
-          />
-        ))}
-      </p>
+      <div className="flex flex-col gap-2">
+        {face}
+        <p className={`${BOT_BUBBLE} flex gap-1.5 !py-4`} aria-label="Thinking">
+          {[0, 1, 2].map((dot) => (
+            <span
+              key={dot}
+              className="size-1.5 animate-pulse rounded-full bg-ink-muted"
+              style={{ animationDelay: `${dot * 160}ms` }}
+            />
+          ))}
+        </p>
+      </div>
     ) : null;
   }
 
   return (
-    <div className="rise max-w-[92%]">
-      <Prose text={message.text} />
+    <div className="rise flex flex-col gap-2">
+      {face}
+      <div className={BOT_BUBBLE}>
+        <Prose text={message.text} />
+      </div>
     </div>
   );
 }
@@ -748,7 +788,7 @@ function Turn({
 /** The situation, stated from the item, and kept visible as the thread grows. */
 function SituationCard({ intake, photos }: { intake: Intake; photos: Photo[] }) {
   return (
-    <section className="rise rounded-2xl border border-rule bg-sunken px-5 py-4">
+    <section className={`rise ${CARD} px-5 py-4`}>
       <p className="text-xs font-medium tracking-wide text-ink-muted uppercase">
         {SITUATION.eyebrow}
       </p>
@@ -771,10 +811,11 @@ function SituationCard({ intake, photos }: { intake: Intake; photos: Photo[] }) 
  */
 function Framing() {
   return (
-    <div className="rise flex max-w-[92%] flex-col gap-3 text-[15px] leading-relaxed">
-      <p>{FRAMING.intro}</p>
+    <div className="rise flex flex-col gap-3">
+      <BotAvatar size={40} />
+      <p className={BOT_BUBBLE}>{FRAMING.intro}</p>
       <SellingLenses />
-      <p>{FRAMING.outro}</p>
+      <p className={BOT_BUBBLE}>{FRAMING.outro}</p>
     </div>
   );
 }
@@ -790,8 +831,8 @@ function VerdictSources({ appraisal }: { appraisal: AppraiseResponse }) {
   if (counted.length === 0 && !newHref) return null;
 
   const chip =
-    "inline-flex items-baseline gap-1.5 rounded-full border border-rule px-2.5 py-1 text-xs text-ink-secondary";
-  const link = `${chip} transition-colors hover:border-ink hover:text-ink focus-visible:border-ink focus-visible:text-ink focus-visible:outline-none`;
+    "inline-flex items-baseline gap-1.5 rounded-full bg-surface px-3 py-1.5 text-xs text-ink-secondary shadow-soft";
+  const link = `${chip} transition-colors hover:text-ink focus-visible:text-ink focus-visible:ring-2 focus-visible:ring-action focus-visible:outline-none`;
 
   return (
     <section className="rise flex flex-col gap-2" aria-label="Sources">
@@ -844,7 +885,7 @@ function Notice({ children }: { children: React.ReactNode }) {
   return (
     <p
       role="status"
-      className="rounded-xl border border-rule-strong bg-sunken px-4 py-3 text-sm text-ink-secondary"
+      className={`${CARD} px-5 py-3.5 text-sm text-ink-secondary`}
     >
       {children}
     </p>

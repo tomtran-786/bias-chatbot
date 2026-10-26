@@ -3,13 +3,16 @@
 /**
  * Palette roles, not raw colours.
  *
- * Taken from the data-viz reference palette so the scorecard and the chat it
- * sits inside are one system rather than two. The scorecard uses the emphasis
- * form — one accent hue for the dimensions the recommendation argues about, a
- * de-emphasis grey for everything else — which was validated against both
- * surfaces: CVD ΔE 15.9, normal-vision ΔE 17.8/17.0, contrast ≥ 3:1 in both
- * modes. Changing --accent or --mark-muted invalidates that, so re-run
- * scripts/validate_palette.js from the dataviz skill if you do.
+ * The look is a soft sky-blue wash with white, rounded, shadow-lifted surfaces and
+ * one deep navy for the person's own turn; the assistant speaks from white. Edges
+ * come from elevation (--elev), not from outlines, so --rule is only for dividers
+ * inside a card.
+ *
+ * --accent and --mark-muted are the data-viz reference palette the market figure
+ * was validated with (CVD ΔE 15.9, normal-vision ΔE 17.8/17.0, contrast ≥ 3:1 on
+ * both surfaces). They are deliberately not retinted with the rest: changing them
+ * invalidates that, so re-run scripts/validate_palette.js from the dataviz skill
+ * if you do. --action is only for outlined buttons and links.
  *
  * Dark values are declared twice on purpose: the media query covers the OS
  * setting, the [data-theme] scope covers an explicit choice and must win both
@@ -18,77 +21,103 @@
 :root {
   color-scheme: light;
 
-  /* Surfaces */
-  --plane: #f9f9f7;
-  --surface: #fcfcfb;
-  --surface-sunken: #f2f1ed;
+  /* Surfaces. --plane is the solid fallback under the wash. */
+  --plane: #e4edf4;
+  --plane-top: #bfd5e7;
+  --plane-mid: #d9e6f0;
+  --plane-bottom: #f3f6fa;
+  --surface: #ffffff;
+  --surface-sunken: #eef3f8;
 
   /* Ink */
-  --ink: #0b0b0b;
-  --ink-secondary: #52514e;
-  --ink-muted: #898781;
+  --ink: #0f1b3d;
+  --ink-secondary: #44506b;
+  --ink-muted: #6f7b94;
 
   /* Lines */
-  --rule: #e1e0d9;
-  --rule-strong: #c3c2b7;
+  --rule: #e1e8f0;
+  --rule-strong: #c4cfdd;
 
   /* Marks. One accent hue plus the de-emphasis grey. */
   --accent: #2a78d6;
   --accent-quiet: #86b6ef;
   --mark-muted: #898781;
-  --track: #e1e0d9;
+  --track: #d3deea;
 
-  /* The person's own turn: ink-on-ink, so it never competes with the accent. */
-  --bubble: #1f1f1e;
-  --bubble-ink: #fcfcfb;
+  /* The person's own turn, and the one filled button. */
+  --bubble: #0b1d6b;
+  --bubble-ink: #ffffff;
+
+  /* Outlined buttons and the send arrow. */
+  --action: #3640b8;
+  --action-wash: #dfe4fb;
+
+  /* How far a surface sits above the wash. */
+  --elev: 0 8px 22px rgb(38 70 120 / 0.12), 0 1px 2px rgb(38 70 120 / 0.08);
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
 
-    --plane: #0d0d0d;
-    --surface: #1a1a19;
-    --surface-sunken: #232322;
+    --plane: #0c1222;
+    --plane-top: #1a2a4a;
+    --plane-mid: #121c34;
+    --plane-bottom: #0a0f1d;
+    --surface: #1a2338;
+    --surface-sunken: #232e48;
 
-    --ink: #ffffff;
-    --ink-secondary: #c3c2b7;
-    --ink-muted: #898781;
+    --ink: #f1f4fb;
+    --ink-secondary: #b9c4db;
+    --ink-muted: #8794b0;
 
-    --rule: #2c2c2a;
-    --rule-strong: #383835;
+    --rule: #2b3752;
+    --rule-strong: #3b4968;
 
     --accent: #3987e5;
     --accent-quiet: #184f95;
     --mark-muted: #898781;
-    --track: #2c2c2a;
+    --track: #2b3752;
 
-    --bubble: #e8e7e1;
-    --bubble-ink: #121211;
+    --bubble: #3a4bc9;
+    --bubble-ink: #ffffff;
+
+    --action: #aab5ff;
+    --action-wash: #2b3563;
+
+    --elev: 0 8px 22px rgb(0 0 0 / 0.35), 0 1px 2px rgb(0 0 0 / 0.4);
   }
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
 
-  --plane: #0d0d0d;
-  --surface: #1a1a19;
-  --surface-sunken: #232322;
+  --plane: #0c1222;
+  --plane-top: #1a2a4a;
+  --plane-mid: #121c34;
+  --plane-bottom: #0a0f1d;
+  --surface: #1a2338;
+  --surface-sunken: #232e48;
 
-  --ink: #ffffff;
-  --ink-secondary: #c3c2b7;
-  --ink-muted: #898781;
+  --ink: #f1f4fb;
+  --ink-secondary: #b9c4db;
+  --ink-muted: #8794b0;
 
-  --rule: #2c2c2a;
-  --rule-strong: #383835;
+  --rule: #2b3752;
+  --rule-strong: #3b4968;
 
   --accent: #3987e5;
   --accent-quiet: #184f95;
   --mark-muted: #898781;
-  --track: #2c2c2a;
+  --track: #2b3752;
 
-  --bubble: #e8e7e1;
-  --bubble-ink: #121211;
+  --bubble: #3a4bc9;
+  --bubble-ink: #ffffff;
+
+  --action: #aab5ff;
+  --action-wash: #2b3563;
+
+  --elev: 0 8px 22px rgb(0 0 0 / 0.35), 0 1px 2px rgb(0 0 0 / 0.4);
 }
 
 @theme inline {
@@ -106,13 +135,77 @@
   --color-track: var(--track);
   --color-bubble: var(--bubble);
   --color-bubble-ink: var(--bubble-ink);
+  --color-action: var(--action);
+  --color-action-wash: var(--action-wash);
+  --shadow-soft: var(--elev);
 }
 
 body {
-  background: var(--plane);
+  background-color: var(--plane);
+  background-image: linear-gradient(
+    180deg,
+    var(--plane-top) 0%,
+    var(--plane-mid) 38%,
+    var(--plane-bottom) 100%
+  );
+  background-attachment: fixed;
   color: var(--ink);
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
+}
+
+/* The filled button: the same navy as the person's own turn. */
+.btn-primary {
+  border-radius: 9999px;
+  background: var(--bubble);
+  color: var(--bubble-ink);
+  box-shadow: var(--elev);
+  transition: opacity 150ms, transform 150ms;
+}
+.btn-primary:hover:not(:disabled) {
+  opacity: 0.92;
+}
+.btn-primary:active:not(:disabled) {
+  transform: scale(0.98);
+}
+.btn-primary:disabled {
+  opacity: 0.35;
+  box-shadow: none;
+}
+
+/* The outlined button, for the step the person may or may not take. */
+.btn-ghost {
+  border-radius: 9999px;
+  border: 1px solid color-mix(in srgb, var(--action) 45%, transparent);
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+  color: var(--action);
+  transition: background-color 150ms, border-color 150ms;
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--surface);
+  border-color: var(--action);
+}
+.btn-ghost:disabled {
+  opacity: 0.4;
+}
+
+/* The assistant's small face blinks now and then; nothing else on it moves. */
+@media (prefers-reduced-motion: no-preference) {
+  .bot-eye {
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: blink 6s infinite;
+  }
+}
+@keyframes blink {
+  0%,
+  94%,
+  100% {
+    transform: scaleY(1);
+  }
+  97% {
+    transform: scaleY(0.1);
+  }
 }
 
 /* Tabular figures wherever a number is meant to be compared to another. */

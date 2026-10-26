@@ -55,7 +55,7 @@ export function PriceGate({
   const amount = parseAmount(text);
 
   return (
-    <section className="rise flex flex-col gap-6 rounded-2xl border border-rule bg-surface px-5 py-6 sm:px-6">
+    <section className="rise flex flex-col gap-6 rounded-3xl bg-surface px-5 py-7 shadow-soft sm:px-7">
       <header className="flex flex-col gap-2">
         <p className="text-xs font-medium tracking-wide text-ink-muted uppercase">
           {ASKING_PRICE_PROMPT.eyebrow}
@@ -82,7 +82,7 @@ export function PriceGate({
       >
         <label className="flex flex-col gap-1.5">
           <span className="sr-only">Listing price in US dollars</span>
-          <span className="flex items-center gap-2 rounded-xl border border-rule bg-surface px-4 py-3 focus-within:border-rule-strong">
+          <span className="flex items-center gap-2 rounded-full bg-sunken px-6 py-3 ring-1 ring-transparent transition-shadow focus-within:ring-action/40">
             <span aria-hidden className="text-2xl text-ink-muted">$</span>
             <input
               type="text"
@@ -107,7 +107,7 @@ export function PriceGate({
         <button
           type="submit"
           disabled={amount === null || pending}
-          className="self-start rounded-full bg-ink px-5 py-2.5 text-sm font-medium text-plane transition-opacity hover:opacity-90 disabled:opacity-30"
+          className="btn-primary self-start px-6 py-3 text-sm font-medium"
         >
           {pending ? "Looking up the market…" : "Lock it in and see the market"}
         </button>

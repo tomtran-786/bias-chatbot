@@ -79,7 +79,7 @@ export function PhotoPicker({
           disabled={disabled || busy || full}
           aria-label={full ? "Photo limit reached" : "Attach a photo"}
           title={full ? "Photo limit reached" : "Attach a photo"}
-          className="mb-0.5 flex size-9 shrink-0 items-center justify-center rounded-full border border-rule text-ink-secondary transition-colors hover:border-rule-strong hover:text-ink disabled:opacity-30"
+          className="mb-0.5 flex size-9 shrink-0 items-center justify-center rounded-full bg-sunken text-ink-secondary transition-colors hover:text-ink disabled:opacity-30"
         >
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
             <rect x="3" y="5" width="18" height="14" rx="2.5" />
@@ -92,7 +92,7 @@ export function PhotoPicker({
           type="button"
           onClick={() => input.current?.click()}
           disabled={disabled || busy || full}
-          className="flex h-24 w-24 shrink-0 flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-rule-strong text-xs text-ink-muted transition-colors hover:border-ink hover:text-ink disabled:opacity-40"
+          className="flex h-24 w-24 shrink-0 flex-col items-center justify-center gap-1 rounded-2xl border border-dashed border-rule-strong bg-sunken text-xs text-ink-muted transition-colors hover:border-action hover:text-action disabled:opacity-40"
         >
           <span aria-hidden className="text-lg leading-none">+</span>
           {busy ? "Adding…" : full ? "Full" : "Add photo"}
@@ -135,7 +135,7 @@ export function Thumb({
   size?: string;
 }) {
   return (
-    <div className={`relative ${size} shrink-0 overflow-hidden rounded-xl border border-rule bg-sunken`}>
+    <div className={`relative ${size} shrink-0 overflow-hidden rounded-2xl bg-sunken shadow-soft`}>
       {/* eslint-disable-next-line @next/next/no-img-element -- a local data: URL; next/image cannot optimise it */}
       <img src={photoSrc(photo)} alt={`Photo ${index + 1}`} className="size-full object-cover" />
       {onRemove ? (

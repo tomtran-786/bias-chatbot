@@ -66,7 +66,7 @@ export function MarketCard({
   }, []);
 
   return (
-    <article className="rise overflow-hidden rounded-2xl border border-rule bg-surface">
+    <article className="rise overflow-hidden rounded-3xl bg-surface shadow-soft">
       <header className="flex flex-col gap-1.5 border-b border-rule px-5 py-5 sm:px-6">
         <h2 className="text-lg leading-snug font-semibold tracking-tight text-pretty">
           {marketHeadline(appraisal)}
@@ -157,7 +157,7 @@ export function MarketCard({
             type="button"
             onClick={onContinue}
             disabled={pending || !settled}
-            className="mt-1 self-start rounded-full bg-ink px-5 py-2.5 text-sm font-medium text-plane transition-opacity hover:opacity-90 disabled:opacity-40"
+            className="btn-primary mt-1 self-start px-6 py-3 text-sm font-medium"
           >
             {pending ? "Thinking…" : "See my verdict"}
           </button>
@@ -480,7 +480,7 @@ function Strip({
         {hovered ? (
           <div
             role="tooltip"
-            className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-full rounded-lg border border-rule-strong bg-surface px-2.5 py-1.5 text-xs shadow-sm whitespace-nowrap"
+            className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-full rounded-xl bg-surface px-3 py-2 text-xs shadow-soft whitespace-nowrap"
             style={{ left: `${Math.min(Math.max(hovered.at, 22), 78)}%`, top: 8 + hovered.row * ROW - 6 }}
           >
             <span className="nums font-semibold">

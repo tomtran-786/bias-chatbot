@@ -53,7 +53,7 @@ export function SellingLenses() {
         {SELLING_LENSES.map((lens, index) => (
           <li
             key={lens.title}
-            className="flex flex-col gap-3 rounded-xl border border-rule bg-sunken p-4"
+            className="flex flex-col gap-3 rounded-3xl bg-surface p-5 shadow-soft"
           >
             {index === 0 ? (
               <BuyerSeat key={`buyer-${run}`} />

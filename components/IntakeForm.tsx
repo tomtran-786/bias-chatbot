@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { BotAvatar } from "@/components/BotAvatar";
 import { PhotoPicker } from "@/components/PhotoPicker";
 import {
   INTAKE_FIELD,
@@ -11,7 +12,7 @@ import {
 } from "@/lib/item";
 
 const field =
-  "w-full rounded-xl border border-rule bg-surface px-3.5 py-2.5 text-[15px] outline-none transition-colors placeholder:text-ink-muted focus:border-rule-strong";
+  "w-full rounded-full bg-sunken px-5 py-3 text-[15px] ring-1 ring-transparent outline-none transition-shadow placeholder:text-ink-muted focus:ring-action/40";
 
 /**
  * The intake, as the first card in the thread rather than a screen before it.
@@ -32,15 +33,16 @@ export function IntakeForm({
   const complete = item.trim().length > 0 && photos.length > 0;
 
   return (
-    <section className="rise flex flex-col gap-7 rounded-2xl border border-rule bg-surface px-5 py-6 sm:px-6">
-      <header className="flex flex-col gap-3">
+    <section className="rise flex flex-col gap-7 rounded-3xl bg-surface px-5 py-7 shadow-soft sm:px-7">
+      <header className="flex flex-col items-center gap-3 text-center">
+        <BotAvatar size={88} />
         <p className="text-xs font-medium tracking-wide text-ink-muted uppercase">
           VIBE
         </p>
         <h2 className="text-2xl leading-tight font-semibold tracking-tight text-balance">
           Resale price assistant
         </h2>
-        <p className="max-w-[62ch] text-[15px] leading-relaxed text-ink-secondary">
+        <p className="max-w-[56ch] text-[15px] leading-relaxed text-ink-secondary">
           Made by VIBE to help you price something you are about to sell, so it
           actually sells. Start with the item and a photo, then a few short
           questions. After you name your price you get used listings of the same
@@ -80,7 +82,7 @@ export function IntakeForm({
         type="button"
         disabled={!complete}
         onClick={() => complete && onSubmit({ item: item.trim() }, photos)}
-        className="self-start rounded-full bg-ink px-5 py-2.5 text-sm font-medium text-plane transition-opacity hover:opacity-90 disabled:opacity-30"
+        className="btn-primary self-center px-8 py-3 text-sm font-medium"
       >
         Start
       </button>
