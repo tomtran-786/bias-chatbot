@@ -41,7 +41,7 @@ const photos = [{ id: "p1", mime: "image/jpeg" as const, data: "eA==" }];
 const intake = { item: "iPhone 13" };
 const context = { intake, photoCount: 1 };
 const facts = {
-  searchQuery: "x", model: "x", variant: null, ageMonths: null, condition: "good" as const, included: [], defects: [], purchasePrice: null,
+  searchQuery: "x", model: "x", variant: null, ageMonths: null, condition: "good" as const, category: "other" as const, included: [], defects: [], purchasePrice: null,
 };
 const sources = [{ url: "https://a.example/1", title: "t", text: "$5" }];
 

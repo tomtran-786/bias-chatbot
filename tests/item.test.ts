@@ -93,7 +93,7 @@ describe("keeping prices out of the search", () => {
     variant: "128GB, blue, $800 from the carrier",
     ageMonths: 20,
     condition: "good",
-    included: ["box", "charger worth $20"],
+    category: "other" as const, included: ["box", "charger worth $20"],
     defects: ["scratch on the back"],
     purchasePrice: 800,
   };
@@ -129,7 +129,7 @@ describe("searchQueries", () => {
     variant: "128GB, blue",
     ageMonths: 36,
     condition: "good",
-    included: [],
+    category: "other" as const, included: [],
     defects: [],
     purchasePrice: 849,
   };

@@ -97,7 +97,7 @@ describe("the guard that keeps it free", () => {
 
     const fetchImpl = stub(completion("{}"));
     await expect(openrouter.extractFacts(transcript, intake, fetchImpl)).rejects.toBeInstanceOf(BackendUnavailableError);
-    await expect(openrouter.readListings({ searchQuery: "x", model: "x", variant: null, ageMonths: null, condition: "good", included: [], defects: [], purchasePrice: null }, [{ url: "https://a.example", title: "t", text: "$5" }], fetchImpl)).rejects.toBeInstanceOf(BackendUnavailableError);
+    await expect(openrouter.readListings({ searchQuery: "x", model: "x", variant: null, ageMonths: null, condition: "good", category: "other" as const, included: [], defects: [], purchasePrice: null }, [{ url: "https://a.example", title: "t", text: "$5" }], fetchImpl)).rejects.toBeInstanceOf(BackendUnavailableError);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -168,7 +168,7 @@ describe("the request", () => {
   it("is never shown what they paid when reading the listings", async () => {
     const fetchImpl = stub(completion(JSON.stringify({ listings: [], position: "typical", positionEvidence: "" })));
     await openrouter.readListings(
-      { searchQuery: "iPhone 13", model: "iPhone 13", variant: "paid $849", ageMonths: 1, condition: "good", included: [], defects: [], purchasePrice: 849 },
+      { searchQuery: "iPhone 13", model: "iPhone 13", variant: "paid $849", ageMonths: 1, condition: "good", category: "other" as const, included: [], defects: [], purchasePrice: 849 },
       [{ url: "https://a.example", title: "t", text: "$5" }],
       fetchImpl,
     );

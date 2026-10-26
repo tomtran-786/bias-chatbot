@@ -13,6 +13,7 @@ import {
 import {
   NEW_PRICE_CEILING,
   OVERPRICED_AT,
+  SALVAGE_FRACTION,
   formatUsd,
   formatUsdWhole,
   marketHeadline,
@@ -76,7 +77,7 @@ export function MarketCard({
 
       <PricePair appraisal={appraisal} />
 
-      {market.tier !== "none" ? (
+      {market.count > 0 ? (
         <Strip appraisal={appraisal} counted={citations.counted} />
       ) : null}
 
@@ -86,16 +87,14 @@ export function MarketCard({
 
       {citations.counted.length > 0 ? (
         <section id="sources" className="scroll-mt-4 border-b border-rule px-5 py-4 sm:px-6">
-          <h3 className="text-sm font-medium">
-            {market.tier === "none" ? "Verified listings, too few to price from" : "Sources"}
-          </h3>
+          <h3 className="text-sm font-medium">Sources</h3>
           {citations.platforms
             .filter((platform) => platform.listings.length > 0)
             .map((platform) => (
               <PlatformGroup
                 key={platform.platform}
                 platform={platform}
-                showMedian={market.tier !== "none"}
+                showMedian={market.method === "median"}
               />
             ))}
         </section>
@@ -110,7 +109,7 @@ export function MarketCard({
           </summary>
           <p className="mt-2 text-xs leading-relaxed text-ink-muted">
             These prices didn’t appear in the text of the page they were found on,
-            so they are not part of the median.
+            so they are not part of the price.
           </p>
           <ul className="mt-1 flex flex-col opacity-60">
             {citations.unverified.map((cited) => (
@@ -124,8 +123,9 @@ export function MarketCard({
 
       <footer className="flex flex-col gap-3 bg-sunken px-5 py-5 sm:px-6">
         <p className="text-xs leading-relaxed text-ink-secondary">
-          Prices from public listings found by web search. Asking and sold prices,
-          not offers you’ll receive.
+          {market.tier === "estimate"
+            ? "No listings could be confirmed, so this is calculated from what you paid, not seen in the market."
+            : "Prices from public listings found by web search. Asking and sold prices, not offers you’ll receive."}
           {conversionNote(appraisal) ? ` ${conversionNote(appraisal)}` : ""}
         </p>
         <details>
@@ -143,12 +143,22 @@ export function MarketCard({
                 </ul>
               </div>
             ) : null}
+            {market.depreciation ? (
+              <p>
+                With no listings to go on, the app takes the same amount off every
+                month, from what you paid down to {Math.round(SALVAGE_FRACTION * 100)}% of it
+                over {market.depreciation.lifeMonths / 12} years, and counts the months you
+                have used it. That is straight-line depreciation: it knows nothing about
+                demand, condition or newer models.
+              </p>
+            ) : null}
             <p>
               An AI reads the search results and reports each listing. A price counts
               only if it appears word for word in the text of the page it came from.
               The median uses sold prices when there are five or more, otherwise
-              asking prices, and the app works out every figure itself. A search can
-              miss listings or pick up the wrong model.
+              asking prices; with one or two listings the price is their average. The
+              app works out every figure itself. A search can miss listings or pick up
+              the wrong model.
             </p>
           </div>
         </details>
@@ -183,17 +193,22 @@ function subtitle(a: AppraiseResponse): string {
 function basisSentence(a: AppraiseResponse): string {
   const { market } = a;
   if (market.tier === "none") {
-    return `Found ${a.listings.length} listing${a.listings.length === 1 ? "" : "s"}, but only ${market.count} could be verified. That is not enough for a market price.`;
+    return `Found ${a.listings.length} listing${a.listings.length === 1 ? "" : "s"}, but none could be verified, and there is not enough about what you paid and how long you used it to estimate a price.`;
+  }
+  if (market.depreciation) {
+    const d = market.depreciation;
+    return `No listings could be verified, so this is an estimate: ${formatUsd(d.cost)} paid, written off evenly over ${d.lifeMonths / 12} years, ${d.ageMonths} months used.`;
   }
   const what =
     market.basis === "sold"
       ? `${market.count} sold listing${market.count === 1 ? "" : "s"}`
-      : `${market.count} listings, asking prices`;
+      : `${market.count} listing${market.count === 1 ? "" : "s"}, asking prices`;
   const caveats = [
     market.askingRunHigh ? "Asking prices run higher than what things sell for." : null,
     market.tier === "thin" ? "Only a few listings, so treat this as a rough guide." : null,
+    market.tier === "sparse" ? "Very few listings, so treat this as a rough guide." : null,
   ].filter(Boolean);
-  return [`Median of ${what}.`, ...caveats].join(" ");
+  return [`${market.tier === "sparse" ? "Average" : "Median"} of ${what}.`, ...caveats].join(" ");
 }
 
 /** Why the suggestion sits where it does. The new-price cap is added by the caller, as a link. */
@@ -201,7 +216,13 @@ function suggestionNote(a: AppraiseResponse): string {
   const { suggested, market } = a;
   if (!suggested) return "";
   const parts: string[] = [];
-  if (market.tier === "thin") {
+  if (market.tier === "estimate") {
+    parts.push(
+      "The depreciated value, with no adjustment for condition. Check recently sold listings of the same model before you list.",
+    );
+  } else if (market.tier === "sparse") {
+    parts.push("The average of the one or two listings found, with no adjustment for condition.");
+  } else if (market.tier === "thin") {
     parts.push("The median of the few listings found, with no adjustment for condition.");
   } else {
     const where =
@@ -282,15 +303,23 @@ function PricePair({ appraisal }: { appraisal: AppraiseResponse }) {
         note="Locked before the lookup"
       />
       <Figure
-        label="Market median"
+        label={
+          market.method === "mean"
+            ? "Market average"
+            : market.method === "depreciation"
+              ? "Estimated value"
+              : "Market median"
+        }
         keyColor="var(--ink)"
         value={market.median === null ? "—" : formatUsd(market.median)}
         note={
           market.q1 !== null && market.q3 !== null
             ? `Middle half: ${formatUsdWhole(market.q1)}–${formatUsdWhole(market.q3)}`
-            : market.tier === "thin"
-              ? `${market.count} listings`
-              : "Not enough listings"
+            : market.tier === "thin" || market.tier === "sparse"
+              ? `${market.count} listing${market.count === 1 ? "" : "s"}`
+              : market.tier === "estimate"
+                ? "Straight-line depreciation"
+                : "Not enough to price"
         }
       />
     </div>
@@ -410,7 +439,7 @@ function Strip({
           className="absolute whitespace-nowrap"
           style={{ left: `${xMedian}%`, transform: `translateX(${ANCHOR_SHIFT[anchorFor(xMedian, xAsking, true)]})` }}
         >
-          Median {formatUsd(median)}
+          {market.method === "mean" ? "Average" : "Median"} {formatUsd(median)}
         </span>
         <span
           className="absolute whitespace-nowrap"
@@ -520,7 +549,7 @@ function PlatformGroup({
   showMedian,
 }: {
   platform: CitedPlatform;
-  /** A median of one or two listings is the number the app withholds, so it is not shown then. */
+  /** A median of one or two listings is not shown: the market price there is their average. */
   showMedian: boolean;
 }) {
   const count = `${platform.count} listing${platform.count === 1 ? "" : "s"}`;

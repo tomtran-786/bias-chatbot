@@ -48,7 +48,7 @@ const transcript = [{ role: "user" as const, text: "hi", at, photoIds: ["p1"] }]
 const photos = [{ id: "p1", mime: "image/jpeg" as const, data: "eA==" }];
 const intake = { item: "iPhone 13" };
 const facts = {
-  searchQuery: "x", model: "x", variant: null, ageMonths: null, condition: "good" as const, included: [], defects: [], purchasePrice: null,
+  searchQuery: "x", model: "x", variant: null, ageMonths: null, condition: "good" as const, category: "other" as const, included: [], defects: [], purchasePrice: null,
 };
 const reading = { listings: [], newPrice: null, position: "typical" as const, positionEvidence: "" };
 const context = { intake, photoCount: 1 };

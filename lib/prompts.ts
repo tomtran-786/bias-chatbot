@@ -11,6 +11,7 @@
 import "server-only";
 import { z } from "zod";
 import {
+  ITEM_CATEGORIES,
   ITEM_CONDITIONS,
   PURCHASE_CURRENCIES,
   describeAskingPrice,
@@ -140,6 +141,12 @@ export const FACTS_SCHEMA = {
       description: "How long they have used it, in months. Omit if not said.",
     },
     condition: { type: "string", enum: [...ITEM_CONDITIONS] },
+    category: {
+      type: "string",
+      enum: [...ITEM_CATEGORIES],
+      description:
+        "phone_tablet for a phone or tablet, computer for a laptop or desktop, otherwise other.",
+    },
     included: {
       type: "array",
       items: { type: "string" },
@@ -169,6 +176,7 @@ export const FACTS_SCHEMA = {
     "variant",
     "ageMonths",
     "condition",
+    "category",
     "included",
     "defects",
     "purchasePrice",

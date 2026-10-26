@@ -192,6 +192,14 @@ export const ITEM_CONDITIONS = [
 ] as const;
 
 /**
+ * What kind of thing it is, only so the app can look up how long it lasts for the
+ * depreciation estimate (`USEFUL_LIFE_YEARS` in lib/pricing.ts). The model labels;
+ * it never supplies the number of years.
+ */
+export const ITEM_CATEGORIES = ["phone_tablet", "computer", "other"] as const;
+export type ItemCategory = (typeof ITEM_CATEGORIES)[number];
+
+/**
  * The facts the appraisal needs, lifted out of the conversation by a separate
  * structured call. `purchasePrice` is here because the verdict talks about it,
  * and is stripped before anything is sent to a search — see `forSearch`.
@@ -205,6 +213,7 @@ export type ItemFacts = {
   /** How long they have used it, in months. */
   ageMonths: number | null;
   condition: (typeof ITEM_CONDITIONS)[number];
+  category: ItemCategory;
   /** What comes with it: box, charger, case. */
   included: string[];
   /** Wear and damage, from their words or the photos. */
@@ -220,6 +229,7 @@ export type ItemFacts = {
  * and the condition are required, because without them there is nothing to price.
  */
 const optionalFacts = {
+  category: z.enum(ITEM_CATEGORIES).default("other").catch("other"),
   variant: z.string().trim().max(200).nullable().default(null).catch(null),
   ageMonths: z.number().min(0).max(1200).nullable().default(null).catch(null),
   included: z.array(z.string().trim().max(200)).max(20).default([]).catch([]),

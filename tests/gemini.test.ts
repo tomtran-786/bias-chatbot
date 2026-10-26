@@ -93,7 +93,7 @@ describe("the system instruction", () => {
       variant: null,
       ageMonths: 20,
       condition: "good" as const,
-      included: [],
+      category: "other" as const, included: [],
       defects: [],
       purchasePrice: 849,
     };
@@ -135,7 +135,7 @@ describe("no call gives the model a tool", () => {
     variant: null,
     ageMonths: 20,
     condition: "good" as const,
-    included: [],
+    category: "other" as const, included: [],
     defects: [],
     purchasePrice: 849,
   };
@@ -188,7 +188,7 @@ describe("readListings", () => {
     variant: "128GB, $849 at the carrier",
     ageMonths: 20,
     condition: "good" as const,
-    included: [],
+    category: "other" as const, included: [],
     defects: ["scratch, cost $637 to fix"],
     purchasePrice: 849,
   };
@@ -286,7 +286,7 @@ describe("timeouts", () => {
     variant: null,
     ageMonths: null,
     condition: "good" as const,
-    included: [],
+    category: "other" as const, included: [],
     defects: [],
     purchasePrice: null,
   };

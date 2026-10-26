@@ -482,6 +482,7 @@ const FACTS_EXAMPLE = {
   variant: "128GB, blue",
   ageMonths: 24,
   condition: "good",
+  category: "phone_tablet",
   included: ["box"],
   defects: ["light scratches on the back"],
   purchasePrice: 700,

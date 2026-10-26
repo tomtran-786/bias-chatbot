@@ -158,7 +158,7 @@ describe("readListings", () => {
     variant: "128GB, paid $849",
     ageMonths: 20,
     condition: "good" as const,
-    included: [],
+    category: "other" as const, included: [],
     defects: [],
     purchasePrice: 849,
   };

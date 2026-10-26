@@ -369,8 +369,22 @@ describe("what leaves the process", () => {
 });
 
 describe("thin and empty markets", () => {
-  it("answers 200 with no price when the search found nothing at all", async () => {
+  it("answers 200 with a depreciated price when the search found nothing at all", async () => {
     scripted({ results: [] });
+
+    const { status, json } = await post(body);
+
+    expect(status).toBe(200);
+    // $849 over 60 months to a $84.90 salvage, 18 months used.
+    expect(json.market).toMatchObject({ tier: "estimate", method: "depreciation", count: 0, median: 619.77 });
+    expect(json.suggested).toMatchObject({ price: 620, anchor: "median" });
+    expect(json.gap).not.toBeNull();
+    expect(json.listings).toEqual([]);
+    expect(modelRequests()).toHaveLength(1); // no reading without sources
+  });
+
+  it("answers 200 with no price when there is nothing to depreciate either", async () => {
+    scripted({ results: [], facts: { ...FACTS, purchasePrice: null } });
 
     const { status, json } = await post(body);
 
@@ -379,18 +393,16 @@ describe("thin and empty markets", () => {
     expect(json.suggested).toBeNull();
     expect(json.gap).toBeNull();
     expect(json.overpriced).toBe(false);
-    expect(json.listings).toEqual([]);
-    expect(modelRequests()).toHaveLength(1); // no reading without sources
   });
 
-  it("answers 200 and withholds a price when only two listings are usable", async () => {
+  it("answers 200 and averages the listings when only two are usable", async () => {
     scripted({
       reading: { listings: listings.slice(0, 2), position: "typical", positionEvidence: "" },
     });
     const { status, json } = await post(body);
     expect(status).toBe(200);
-    expect(json.market.tier).toBe("none");
-    expect(json.suggested).toBeNull();
+    expect(json.market).toMatchObject({ tier: "sparse", method: "mean", count: 2, median: 225 });
+    expect(json.suggested).toMatchObject({ price: 225, anchor: "median" });
   });
 
   it("shows listings it cannot verify, dimmed, and does not count them", async () => {
@@ -398,7 +410,7 @@ describe("thin and empty markets", () => {
       results: hits.map((hit) => ({ ...hit, content: "A page with no prices in its text." })),
     });
     const { json } = await post(body);
-    expect(json.market.tier).toBe("none");
+    expect(json.market).toMatchObject({ tier: "estimate", count: 0 });
     expect(json.listings).toHaveLength(5);
     expect(json.listings.every((l: { status: string }) => l.status === "unverified")).toBe(true);
   });

@@ -21,12 +21,27 @@ import {
   type Source,
 } from "./sources";
 import { DEFAULT_VND_PER_USD, vndAmounts, vndToUsd } from "./currency";
-import { itemFactsSchema, type ItemFacts } from "./item";
+import { itemFactsSchema, type ItemCategory, type ItemFacts } from "./item";
 
 /** A market needs this many listings before it gets a range and an adjustment. */
 export const FULL_MIN = 5;
-/** Below this there is no market price at all. */
+/**
+ * Below this a market has no median. One or two listings are averaged instead
+ * (`mean`), and with none at all the price is estimated by straight-line
+ * depreciation of what they paid.
+ */
 export const THIN_MIN = 3;
+/**
+ * Years each kind of item is written off over in the depreciation estimate. The
+ * model only says which kind it is (`category`); the years are the app's.
+ */
+export const USEFUL_LIFE_YEARS: Record<ItemCategory, number> = {
+  phone_tablet: 3,
+  computer: 5,
+  other: 5,
+};
+/** The share of what they paid that is left when the useful life is over. */
+export const SALVAGE_FRACTION = 0.1;
 /** Listings that go into one median. */
 export const MAX_LISTINGS = 10;
 /**
@@ -122,6 +137,11 @@ export function groundNewPrice(
 
 const round2 = (value: number) => Math.round(value * 100) / 100;
 
+export function mean(values: readonly number[]): number {
+  if (values.length === 0) throw new Error("mean() needs at least one value");
+  return round2(values.reduce((sum, value) => sum + value, 0) / values.length);
+}
+
 export function median(values: readonly number[]): number {
   if (values.length === 0) throw new Error("median() needs at least one value");
   const sorted = [...values].sort((a, b) => a - b);
@@ -145,6 +165,46 @@ export function quartiles(values: readonly number[]): { q1: number; q3: number }
   return {
     q1: round2(quantile(sorted, 0.25)),
     q3: round2(quantile(sorted, 0.75)),
+  };
+}
+
+/** The workings of a straight-line depreciation, so the person can follow the number. */
+export type Depreciation = {
+  /** What they paid, USD. */
+  cost: number;
+  /** What is left of it at the end of the useful life. */
+  salvage: number;
+  lifeMonths: number;
+  /** Months used, as they said it. Past the useful life it stops counting. */
+  ageMonths: number;
+  /** cost − (cost − salvage) ÷ lifeMonths × months used. */
+  value: number;
+};
+
+/**
+ * Straight-line depreciation: the same amount comes off every month, from what
+ * they paid down to the salvage value over the useful life, and stops there.
+ * Null when what they paid or how long they used it is not known, because a price
+ * guessed for either would be the model's, not the app's.
+ *
+ * Months of use stand in for months since purchase, which the conversation does not
+ * ask for separately.
+ */
+export function straightLineValue(
+  item: Pick<ItemFacts, "purchasePrice" | "ageMonths" | "category">,
+): Depreciation | null {
+  const { purchasePrice: cost, ageMonths } = item;
+  if (cost === null || cost <= 0 || ageMonths === null) return null;
+
+  const lifeMonths = USEFUL_LIFE_YEARS[item.category] * 12;
+  const salvage = round2(cost * SALVAGE_FRACTION);
+  const used = Math.min(ageMonths, lifeMonths);
+  return {
+    cost,
+    salvage,
+    lifeMonths,
+    ageMonths: used,
+    value: round2(cost - ((cost - salvage) / lifeMonths) * used),
   };
 }
 
@@ -284,16 +344,32 @@ export const appraisalInputSchema = z.object({
 
 export type AppraisalInput = z.output<typeof appraisalInputSchema>;
 
-export type Tier = "full" | "thin" | "none";
+/**
+ * full: five or more listings. thin: three or four. sparse: one or two, averaged.
+ * estimate: none, so depreciated from what they paid. none: nothing to go on.
+ */
+export type Tier = "full" | "thin" | "sparse" | "estimate" | "none";
+
+/** How `Market.median` was arrived at. */
+export type MarketMethod = "median" | "mean" | "depreciation";
 
 export type Market = {
   tier: Tier;
-  /** "sold" only when five or more sold listings carried the median. */
+  method: MarketMethod | null;
+  /** "sold" only when five or more sold listings carried the median. Null for an estimate. */
   basis: "sold" | "asking" | null;
   /** Asking prices overstate what things sell for; say so when they are used. */
   askingRunHigh: boolean;
+  /** Listings counted. Zero for an estimate. */
   count: number;
+  /**
+   * The market price the figures are set against. Named for the usual case: it is
+   * the mean when `method` is "mean" and the depreciated value when it is
+   * "depreciation".
+   */
   median: number | null;
+  /** The workings, only for an estimate. */
+  depreciation: Depreciation | null;
   /** The interquartile range. Only with a full market. */
   q1: number | null;
   q3: number | null;
@@ -332,12 +408,15 @@ const ANCHOR_FOR: Record<Position, Suggested["anchor"]> = {
  * The market, the suggested price and the gap, from raw grounded listings.
  *
  * The thresholds are the whole policy: five or more listings earns a median, a
- * range and a condition adjustment; three or four earns a median and a flag;
- * fewer than that earns no price, because a number built from two listings is
- * worse than saying so.
+ * range and a condition adjustment; three or four earns a median and a flag; one
+ * or two are averaged and flagged; and with none, what they paid is depreciated
+ * in a straight line (`straightLineValue`). Only when even that cannot be worked
+ * out is there no price.
  */
 export function computeAppraisal(
   input: Pick<AppraisalInput, "listings" | "newPrice" | "position" | "positionEvidence"> & {
+    /** What the depreciation estimate needs, for when there are no listings. */
+    item?: Pick<ItemFacts, "purchasePrice" | "ageMonths" | "category">;
     newPriceUrl?: string | null;
     vndPerUsd?: number;
   },
@@ -372,21 +451,48 @@ export function computeAppraisal(
   const used = pool.map((l): PricedListing => ({ ...l, status: "used" }));
   const prices = used.map((l) => l.price);
 
+  const depreciation =
+    used.length === 0 && input.item ? straightLineValue(input.item) : null;
+
   const tier: Tier =
-    used.length >= FULL_MIN ? "full" : used.length >= THIN_MIN ? "thin" : "none";
+    used.length >= FULL_MIN
+      ? "full"
+      : used.length >= THIN_MIN
+        ? "thin"
+        : used.length > 0
+          ? "sparse"
+          : depreciation
+            ? "estimate"
+            : "none";
+
+  const method: Market["method"] =
+    tier === "full" || tier === "thin"
+      ? "median"
+      : tier === "sparse"
+        ? "mean"
+        : tier === "estimate"
+          ? "depreciation"
+          : null;
 
   const basis: Market["basis"] =
-    tier === "none" ? null : soldCarries || used.every((l) => l.kind === "sold") ? "sold" : "asking";
+    used.length === 0 ? null : soldCarries || used.every((l) => l.kind === "sold") ? "sold" : "asking";
 
-  const marketMedian = tier === "none" ? null : median(prices);
+  const marketMedian =
+    method === "median"
+      ? median(prices)
+      : method === "mean"
+        ? mean(prices)
+        : (depreciation?.value ?? null);
   const range = tier === "full" ? quartiles(prices) : null;
 
   const market: Market = {
     tier,
+    method,
     basis,
     askingRunHigh: basis === "asking",
     count: used.length,
     median: marketMedian,
+    depreciation,
     q1: range?.q1 ?? null,
     q3: range?.q3 ?? null,
   };
@@ -395,8 +501,8 @@ export function computeAppraisal(
 
   let suggested: Suggested | null = null;
   if (marketMedian !== null) {
-    // Only a full market has quartiles to adjust along; a thin one stays on the
-    // median, whatever the position says. Where it does adjust, P75 is also the
+    // Only a full market has quartiles to adjust along; every other one stays on
+    // its single figure, whatever the position says. Where it does adjust, P75 is also the
     // most it may ever suggest.
     const anchor = range ? ANCHOR_FOR[input.position] : "median";
     const target = !range
@@ -478,21 +584,32 @@ export function formatPct(pct: number): string {
  * exactly as `formatPct` does it, so the title never disagrees with a figure
  * shown elsewhere.
  */
+const PRICE_NAME: Record<MarketMethod, string> = {
+  median: "market median",
+  mean: "market average",
+  depreciation: "depreciated value",
+};
+
 export function marketHeadline({
   asking,
   gap: gapToMarket,
   item,
-}: Pick<Appraisal, "asking" | "gap"> & { item: Pick<ItemFacts, "model"> }): string {
+  market,
+}: Pick<Appraisal, "asking" | "gap"> & {
+  item: Pick<ItemFacts, "model">;
+  market?: Pick<Market, "method">;
+}): string {
+  const name = PRICE_NAME[market?.method ?? "median"];
   if (gapToMarket === null) {
     return `Too few verified listings to price your ${item.model || "item"}`;
   }
   // Under half a percent rounds to "0%", which would read as a gap that is not
   // there; say what it is instead.
   if (Math.abs(gapToMarket.pct) < 0.005) {
-    return `Your ${formatUsd(asking)} is right at the market median`;
+    return `Your ${formatUsd(asking)} is right at the ${name}`;
   }
   const size = formatPct(gapToMarket.pct).replace(/^[+−]/, "");
-  return `Your ${formatUsd(asking)} is ${size} ${gapToMarket.pct > 0 ? "above" : "below"} the market median`;
+  return `Your ${formatUsd(asking)} is ${size} ${gapToMarket.pct > 0 ? "above" : "below"} the ${name}`;
 }
 
 /**
@@ -509,14 +626,37 @@ export function describeAppraisal(appraisal: Appraisal): string {
 
   if (market.tier === "none") {
     lines.push(
-      `Only ${market.count} usable listing${market.count === 1 ? "" : "s"} could be verified, which is not enough to state a market price.`,
+      `Only ${market.count} usable listing${market.count === 1 ? "" : "s"} could be verified, and there is not enough about what they paid and how long they used it to estimate a price by depreciation. That is not enough to state a market price.`,
       "",
       "Do not give a price, a range or a comparison to theirs. Instead explain how they should price this themselves: check recently sold listings of the exact model on the platforms below, price against what has sold rather than what is listed, and adjust for the condition you saw in the photos.",
     );
+  } else if (market.tier === "estimate") {
+    const d = market.depreciation!;
+    lines.push(
+      "- No listings could be verified, so there is no market evidence. The app estimated the price by straight-line depreciation instead.",
+      `- They paid ${formatUsd(d.cost)} and used it for ${d.ageMonths} months. It is written off evenly over ${d.lifeMonths / 12} years down to ${formatUsd(d.salvage)}.`,
+      `- Estimated value: ${formatUsd(market.median!)}`,
+      "- Say plainly that this is an accounting estimate from what they paid and how long they have used it, not what buyers are paying, and that it ignores demand, condition and new models. There are no per-platform figures: in \"Where to sell\" say you have no platform data and name no platform. Do not mention listings, and keep the tone tentative.",
+    );
+    if (appraisal.newPrice !== null) {
+      lines.push(`- New price, as a ceiling only: ${formatUsd(appraisal.newPrice)}`);
+    }
+    lines.push(
+      `- Their locked price: ${formatUsd(appraisal.asking)} (${formatPct(gapToMarket!.pct)} against the estimate)`,
+      `- overpriced: ${appraisal.overpriced ? "true" : "false"}`,
+    );
+    if (suggested) {
+      lines.push(
+        `- Suggested price: ${formatUsd(suggested.price)}${suggested.capped ? " (held down by the new-price ceiling)" : ""}`,
+        "- The suggested price is the plain estimate, with no adjustment for condition. Tell them to check recently sold listings of the exact model before they list.",
+      );
+    }
   } else {
     lines.push(
       `- Listings counted: ${market.count} (${market.basis === "sold" ? "sold listings" : "asking prices"})`,
-      `- Market median: ${formatUsd(market.median!)}`,
+      market.tier === "sparse"
+        ? `- Market average: ${formatUsd(market.median!)}`
+        : `- Market median: ${formatUsd(market.median!)}`,
     );
     if (market.q1 !== null && market.q3 !== null) {
       lines.push(
@@ -533,11 +673,16 @@ export function describeAppraisal(appraisal: Appraisal): string {
         "- Only a few listings were found. Say plainly that this is thin evidence and keep the tone tentative.",
       );
     }
+    if (market.tier === "sparse") {
+      lines.push(
+        `- Only ${market.count === 1 ? "one listing was" : "two listings were"} found, so the price is their average and not a median. Say plainly that it rests on very little evidence and keep the tone tentative.`,
+      );
+    }
     if (appraisal.newPrice !== null) {
       lines.push(`- New price, as a ceiling only: ${formatUsd(appraisal.newPrice)}`);
     }
     lines.push(
-      `- Their locked price: ${formatUsd(appraisal.asking)} (${formatPct(gapToMarket!.pct)} against the median)`,
+      `- Their locked price: ${formatUsd(appraisal.asking)} (${formatPct(gapToMarket!.pct)} against the ${market.tier === "sparse" ? "average" : "median"})`,
       `- overpriced: ${appraisal.overpriced ? "true" : "false"}`,
     );
     if (suggested) {
@@ -547,24 +692,20 @@ export function describeAppraisal(appraisal: Appraisal): string {
       lines.push(
         market.tier === "full"
           ? `- Condition against the listings: ${appraisal.position} (below = worse than the typical listing, above = better). Evidence: ${appraisal.positionEvidence || "none given"}`
-          : "- The suggested price is the plain median: with so few listings there is no condition adjustment.",
+          : `- The suggested price is the plain ${market.tier === "sparse" ? "average" : "median"}: with so few listings there is no condition adjustment.`,
       );
     }
   }
 
+  // Only a market with counted listings has platforms: an estimate or no price
+  // has none to name.
   if (appraisal.platforms.length > 0) {
-    if (market.tier === "none") {
-      // A "median" of one or two listings is exactly the number this branch
-      // exists to withhold, so only the names go through.
-      lines.push(
-        "",
-        `Platforms where listings turned up: ${appraisal.platforms.map((p) => p.platform).join(", ")}.`,
-      );
-    } else {
-      lines.push("", "By platform (median of counted listings):");
-      for (const p of appraisal.platforms) {
-        lines.push(`- ${p.platform}: ${formatUsd(p.median)} across ${p.count}`);
-      }
+    lines.push(
+      "",
+      `By platform (${market.tier === "sparse" ? "average" : "median"} of counted listings):`,
+    );
+    for (const p of appraisal.platforms) {
+      lines.push(`- ${p.platform}: ${formatUsd(p.median)} across ${p.count}`);
     }
   }
 

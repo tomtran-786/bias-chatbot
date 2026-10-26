@@ -21,6 +21,8 @@ import {
   median,
   parsePriceText,
   quartiles,
+  straightLineValue,
+  USEFUL_LIFE_YEARS,
   type Position,
 } from "@/lib/pricing";
 
@@ -219,13 +221,26 @@ describe("listingPrice", () => {
 describe("the thresholds", () => {
   const prices = [90, 95, 100, 105, 110, 98, 102, 99, 101, 103, 97, 104];
 
-  it.each([0, 1, 2])("gives no price from %i listings", (n) => {
-    const result = run(many(prices.slice(0, n)));
+  it("gives no price from no listings and nothing to depreciate", () => {
+    const result = run([]);
     expect(result.market.tier).toBe("none");
     expect(result.market.median).toBeNull();
     expect(result.suggested).toBeNull();
     expect(result.gap).toBeNull();
     expect(result.overpriced).toBe(false);
+  });
+
+  it.each([
+    [1, 90],
+    [2, 92.5],
+  ])("averages %i listings, flags it sparse, and does not adjust for condition", (n, average) => {
+    const result = run(many(prices.slice(0, n)), 300, { position: "above" });
+    expect(result.market).toMatchObject({ tier: "sparse", method: "mean", count: n, median: average });
+    expect(result.market.q1).toBeNull();
+    expect(result.market.q3).toBeNull();
+    expect(result.suggested?.anchor).toBe("median");
+    expect(result.gap).not.toBeNull();
+    expect(result.overpriced).toBe(true);
   });
 
   it.each([3, 4])("gives only a median from %i listings, and flags it thin", (n) => {
@@ -250,6 +265,79 @@ describe("the thresholds", () => {
     const result = run(many(prices));
     expect(prices.length).toBeGreaterThan(MAX_LISTINGS);
     expect(result.market.count).toBe(MAX_LISTINGS);
+  });
+});
+
+describe("straight-line depreciation", () => {
+  const phone = { purchasePrice: 700, ageMonths: 18, category: "phone_tablet" as const };
+
+  it("takes the same amount off every month, from what they paid to a tenth of it", () => {
+    // 36 months, salvage $70: $630 ÷ 36 = $17.50 a month.
+    expect(straightLineValue(phone)).toEqual({
+      cost: 700,
+      salvage: 70,
+      lifeMonths: 36,
+      ageMonths: 18,
+      value: 385,
+    });
+    expect(straightLineValue({ ...phone, ageMonths: 0 })?.value).toBe(700);
+  });
+
+  it("stops at the salvage value once the useful life is over", () => {
+    const old = straightLineValue({ ...phone, ageMonths: 100 });
+    expect(old).toMatchObject({ value: 70, ageMonths: 36 });
+  });
+
+  it("writes a computer off over five years and a phone over three", () => {
+    expect(straightLineValue({ ...phone, category: "computer" })?.lifeMonths).toBe(60);
+    expect(straightLineValue({ ...phone, category: "other" })?.lifeMonths).toBe(60);
+    expect(USEFUL_LIFE_YEARS.phone_tablet).toBe(3);
+  });
+
+  it("is null without what they paid or how long they used it", () => {
+    expect(straightLineValue({ ...phone, purchasePrice: null })).toBeNull();
+    expect(straightLineValue({ ...phone, purchasePrice: 0 })).toBeNull();
+    expect(straightLineValue({ ...phone, ageMonths: null })).toBeNull();
+  });
+
+  it("prices an item with no listings, and says it is an estimate", () => {
+    const result = computeAppraisal(
+      { listings: [], newPrice: null, position: "typical", positionEvidence: "", item: phone },
+      500,
+    );
+    expect(result.market).toMatchObject({ tier: "estimate", method: "depreciation", basis: null, count: 0, median: 385 });
+    expect(result.market.askingRunHigh).toBe(false);
+    expect(result.market.depreciation?.value).toBe(385);
+    // $385, rounded to the nearest $10 a seller would list at.
+    expect(result.suggested).toMatchObject({ price: 390, anchor: "median", capped: false });
+    expect(result.gap?.pct).toBeCloseTo((500 - 385) / 385);
+    expect(result.overpriced).toBe(true);
+    expect(result.platforms).toEqual([]);
+  });
+
+  it("holds the estimate to the new-price ceiling like any other price", () => {
+    const result = computeAppraisal(
+      { listings: [], newPrice: 400, position: "typical", positionEvidence: "", item: phone },
+      300,
+    );
+    expect(result.suggested).toMatchObject({ price: 360, capped: true });
+  });
+
+  it("is used only when there are no listings", () => {
+    const result = computeAppraisal(
+      { listings: many([300, 320]), newPrice: null, position: "typical", positionEvidence: "", item: phone },
+      300,
+    );
+    expect(result.market).toMatchObject({ tier: "sparse", median: 310, depreciation: null });
+  });
+
+  it("is used when the only listings could not be verified", () => {
+    const result = computeAppraisal(
+      { listings: many([100, 110, 120], { match: "unverified" }), newPrice: null, position: "typical", positionEvidence: "", item: phone },
+      300,
+    );
+    expect(result.market.tier).toBe("estimate");
+    expect(result.listings).toHaveLength(3);
   });
 });
 
@@ -457,14 +545,49 @@ describe("describeAppraisal", () => {
     expect(text).toContain("Use these figures and no others");
   });
 
-  it("withholds a price entirely when there is no market", () => {
-    const text = describeAppraisal(run(many([100, 200]), 400));
+  it("withholds a price entirely when there is nothing to price from", () => {
+    const text = describeAppraisal(run(many([100, 200], { match: "unverified" }), 400));
     expect(text).toContain("Do not give a price");
     expect(text).not.toContain("Suggested price");
     expect(text).not.toContain("Market median");
-    // Not even a per-platform "median" of a listing or two: only the names.
-    expect(text).toContain("Platforms where listings turned up");
+    expect(text).not.toContain("By platform");
     expect(text).not.toMatch(/\$\d/);
+  });
+
+  it("calls one or two listings an average, and says how little it rests on", () => {
+    const text = describeAppraisal(run(many([100, 200]), 400));
+    expect(text).toContain("Market average: $150");
+    expect(text).not.toContain("Market median");
+    expect(text).toContain("two listings were found");
+    expect(text).toContain("their average and not a median");
+    expect(text).toContain("Suggested price: $150");
+    expect(text).toContain("no condition adjustment");
+    expect(text).toContain("average of counted listings");
+  });
+
+  it("gives the workings of a depreciation estimate, and calls it that", () => {
+    const text = describeAppraisal(
+      computeAppraisal(
+        {
+          listings: [],
+          newPrice: null,
+          position: "typical",
+          positionEvidence: "",
+          item: { purchasePrice: 700, ageMonths: 18, category: "phone_tablet" },
+        },
+        500,
+      ),
+    );
+    expect(text).toContain("No listings could be verified, so there is no market evidence");
+    expect(text).toContain("They paid $700 and used it for 18 months");
+    expect(text).toContain("over 3 years down to $70");
+    expect(text).toContain("Estimated value: $385");
+    expect(text).toContain("not what buyers are paying");
+    expect(text).toContain("no per-platform figures");
+    expect(text).toContain("Suggested price: $390");
+    expect(text).toContain("against the estimate");
+    expect(text).not.toContain("Market median");
+    expect(text).toContain("Use these figures and no others");
   });
 
   it("says when the evidence is thin or is asking prices", () => {
@@ -619,6 +742,16 @@ describe("marketHeadline", () => {
 
   it("leads with the percentage below the median", () => {
     expect(headline(380, 432)).toBe("Your $380 is 12% below the market median");
+  });
+
+  it("names the figure it compared to, when it is an average or an estimate", () => {
+    const base = { asking: 480, gap: gap(480, 450), item };
+    expect(marketHeadline({ ...base, market: { method: "mean" } })).toBe(
+      "Your $480 is 7% above the market average",
+    );
+    expect(marketHeadline({ ...base, market: { method: "depreciation" } })).toBe(
+      "Your $480 is 7% above the depreciated value",
+    );
   });
 
   it.each([
