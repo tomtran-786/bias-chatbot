@@ -6,9 +6,12 @@ import { MarketCard } from "@/components/MarketCard";
 import { PhotoPicker, Thumb } from "@/components/PhotoPicker";
 import { PriceGate } from "@/components/PriceGate";
 import { Prose } from "@/components/Prose";
+import { SellingLenses } from "@/components/SellingLenses";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import {
+  FRAMING,
   MAX_PHOTOS,
+  SITUATION,
   type AskingPrice,
   type Intake,
   type Photo,
@@ -480,7 +483,7 @@ export function Conversation() {
         <div className="mx-auto flex w-full max-w-2xl flex-col gap-3 px-5 py-3">
           <div className="flex items-center justify-between gap-4">
             <h1 className="text-sm font-semibold tracking-tight">
-              Resale price assistant
+              VIBE <span className="font-normal text-ink-muted">· Resale price assistant</span>
             </h1>
             <div className="flex items-center gap-3">
               <p className="text-xs text-ink-muted">{STAGE_LABELS[phase]}</p>
@@ -522,7 +525,10 @@ export function Conversation() {
               }}
             />
           ) : (
-            <ItemCard intake={intake} photos={intakePhotos} />
+            <>
+              <SituationCard intake={intake} photos={intakePhotos} />
+              <Framing />
+            </>
           )}
 
           {before.map((message, index) => (
@@ -739,14 +745,14 @@ function Turn({
   );
 }
 
-/** The item, echoed back so it stays visible as the thread grows. */
-function ItemCard({ intake, photos }: { intake: Intake; photos: Photo[] }) {
+/** The situation, stated from the item, and kept visible as the thread grows. */
+function SituationCard({ intake, photos }: { intake: Intake; photos: Photo[] }) {
   return (
     <section className="rise rounded-2xl border border-rule bg-sunken px-5 py-4">
       <p className="text-xs font-medium tracking-wide text-ink-muted uppercase">
-        Selling
+        {SITUATION.eyebrow}
       </p>
-      <p className="mt-2 text-[15px] leading-relaxed">{intake.item}</p>
+      <p className="mt-2 text-[15px] leading-relaxed">{SITUATION.line(intake.item)}</p>
       {photos.length > 0 ? (
         <div className="mt-3 flex flex-wrap gap-2">
           {photos.map((photo, index) => (
@@ -755,6 +761,21 @@ function ItemCard({ intake, photos }: { intake: Intake; photos: Photo[] }) {
         </div>
       ) : null}
     </section>
+  );
+}
+
+/**
+ * The app's opening turn: two ways to see the price before any question. It is not
+ * a message in the thread, so the transcript the server counts is unchanged; the
+ * model is told in its phase instruction that the person has already read this.
+ */
+function Framing() {
+  return (
+    <div className="rise flex max-w-[92%] flex-col gap-3 text-[15px] leading-relaxed">
+      <p>{FRAMING.intro}</p>
+      <SellingLenses />
+      <p>{FRAMING.outro}</p>
+    </div>
   );
 }
 

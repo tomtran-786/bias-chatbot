@@ -151,7 +151,7 @@ body {
 }
 
 /*
- * The explainer's diagrams (components/LossAversionIntro.tsx) draw themselves once,
+ * The explainer's diagrams (components/SellingLenses.tsx) draw themselves once,
  * when they scroll into view. Only transform, opacity and a stroke offset move; each
  * piece has its own delay and duration so the figure reads in the order it is meant
  * to be understood. Nothing loops. Without motion the figures are simply drawn, and

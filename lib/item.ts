@@ -126,6 +126,37 @@ export const PHOTO_FIELD = {
   hint: `Up to ${INTAKE_MAX_PHOTOS}. Front, back, and any wear or damage — the assistant compares what you say about its condition with what it can see.`,
 } as const;
 
+/** The scene the conversation opens with, from what they typed in the intake. */
+export const SITUATION = {
+  eyebrow: "The situation",
+  line: (item: string) => `You need to sell your used ${item}.`,
+} as const;
+
+/**
+ * Two ways to see the price before the questions start. Shown by the app, never
+ * sent as a turn, so they are not part of the transcript the server counts.
+ * `reminder` is the one-line form kept beside the price box.
+ */
+export const SELLING_LENSES = [
+  {
+    title: "Stand where the buyer stands",
+    body: "If you were the one buying this, what price would you be happy to pay? Pick a smart price, one that gets it sold.",
+    reminder: "As the buyer: what would you pay for it today?",
+  },
+  {
+    title: "Think about what selling gets you",
+    body: "Kept, it takes up space. Sold, it is cash in hand right now, for whatever you need it for today.",
+    reminder: "And what is the cash for, today?",
+  },
+] as const;
+
+export const FRAMING = {
+  intro:
+    "Before we get to condition and price, keep two things in mind. They help you pick a price that actually sells:",
+  outro:
+    "Now you have a good point of view. Let’s get it sold: a few quick questions about its condition, then you set your price, and then we look at how the market prices it together.",
+} as const;
+
 /**
  * The asking price, recorded before the market is looked up.
  *

@@ -5,6 +5,7 @@ import type { MarketStep } from "@/lib/market-client";
 import {
   ASKING_PRICE_PROMPT,
   MAX_ASKING_USD,
+  SELLING_LENSES,
   type AskingPrice,
 } from "@/lib/item";
 
@@ -65,6 +66,11 @@ export function PriceGate({
         <p className="text-sm leading-relaxed text-ink-secondary">
           {ASKING_PRICE_PROMPT.hint}
         </p>
+        <ul className="mt-1 flex flex-col gap-1 border-l-2 border-accent pl-3 text-sm text-ink-secondary">
+          {SELLING_LENSES.map((lens) => (
+            <li key={lens.title}>{lens.reminder}</li>
+          ))}
+        </ul>
       </header>
 
       <form

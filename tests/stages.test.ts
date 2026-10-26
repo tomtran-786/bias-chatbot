@@ -93,6 +93,19 @@ describe("stage tables", () => {
   });
 });
 
+describe("the opening reminders", () => {
+  it("tells the intake not to repeat what the app already showed", () => {
+    expect(STAGE_INSTRUCTIONS.intake).toMatch(/already shown them two reminders/);
+    expect(STAGE_INSTRUCTIONS.intake).toMatch(/Do not repeat either reminder/);
+  });
+
+  it("ties an overpriced verdict back to the buyer and cash reminders, and only then", () => {
+    expect(STAGE_INSTRUCTIONS.verdict).toMatch(/Name the bias only if the appraisal says overpriced is true/);
+    expect(STAGE_INSTRUCTIONS.verdict).toMatch(/what a buyer arriving now would pay/);
+    expect(STAGE_INSTRUCTIONS.verdict).toMatch(/cash they can use/);
+  });
+});
+
 describe("readyToPrice", () => {
   it("is what the market lookup is gated on, and it never asks for a price", () => {
     expect(readyToPrice({ ...ready, hasAskingPrice: false, hasAppraisal: false })).toBeNull();

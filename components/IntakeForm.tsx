@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { LossAversionIntro } from "@/components/LossAversionIntro";
 import { PhotoPicker } from "@/components/PhotoPicker";
 import {
   INTAKE_FIELD,
@@ -34,18 +33,18 @@ export function IntakeForm({
 
   return (
     <section className="rise flex flex-col gap-7 rounded-2xl border border-rule bg-surface px-5 py-6 sm:px-6">
-      <LossAversionIntro />
-
-      <hr className="border-rule" />
-
-      <header className="flex flex-col gap-2">
-        <h2 className="text-lg font-semibold tracking-tight">
-          Price something you are about to sell
+      <header className="flex flex-col gap-3">
+        <p className="text-xs font-medium tracking-wide text-ink-muted uppercase">
+          VIBE
+        </p>
+        <h2 className="text-2xl leading-tight font-semibold tracking-tight text-balance">
+          Resale price assistant
         </h2>
-        <p className="text-sm leading-relaxed text-ink-secondary">
-          Start with the item and a photo, then a few short questions. After you
-          name your price you get used listings of the same model, a suggested
-          price, and where to sell.
+        <p className="max-w-[62ch] text-[15px] leading-relaxed text-ink-secondary">
+          Made by VIBE to help you price something you are about to sell, so it
+          actually sells. Start with the item and a photo, then a few short
+          questions. After you name your price you get used listings of the same
+          model, a suggested price, and where to sell.
         </p>
       </header>
 
