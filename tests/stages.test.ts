@@ -8,16 +8,16 @@ import {
   askedEnough,
   canEnter,
   opensLikePrompt,
-  readyToPrice,
   opensLikeVerdict,
+  readyForMarket,
   type PhaseContext,
 } from "@/lib/stages";
 
 const ready: PhaseContext = {
   assistantTurns: FACT_COUNT,
   photoCount: 1,
+  hasMarket: true,
   hasAskingPrice: true,
-  hasAppraisal: true,
 };
 
 const reason = (result: ReturnType<typeof canEnter>) =>
@@ -28,51 +28,70 @@ describe("canEnter", () => {
     const empty: PhaseContext = {
       assistantTurns: 0,
       photoCount: 0,
+      hasMarket: false,
       hasAskingPrice: false,
-      hasAppraisal: false,
     };
     expect(canEnter("intake", empty).ok).toBe(true);
     expect(canEnter("probe", empty).ok).toBe(true);
     expect(canEnter("complete", empty).ok).toBe(true);
   });
 
-  describe("commit", () => {
+  describe("appraise", () => {
+    const unpriced: PhaseContext = { ...ready, hasMarket: false, hasAskingPrice: false };
+
     it("needs the assistant to have spoken, and nothing more: it decides when it has the facts", () => {
-      expect(canEnter("commit", { ...ready, assistantTurns: 0 }).ok).toBe(false);
-      expect(canEnter("commit", { ...ready, assistantTurns: 1 }).ok).toBe(true);
-      expect(canEnter("commit", { ...ready, assistantTurns: FACT_COUNT }).ok).toBe(true);
+      expect(canEnter("appraise", { ...unpriced, assistantTurns: 0 }).ok).toBe(false);
+      expect(canEnter("appraise", { ...unpriced, assistantTurns: 1 }).ok).toBe(true);
+      expect(canEnter("appraise", { ...unpriced, assistantTurns: FACT_COUNT }).ok).toBe(true);
     });
 
     it("needs at least one photo", () => {
-      const result = canEnter("commit", { ...ready, photoCount: 0 });
+      const result = canEnter("appraise", { ...unpriced, photoCount: 0 });
       expect(result.ok).toBe(false);
       expect(reason(result)).toMatch(/photo/);
     });
 
-    it("does not need a price yet: this is the step that asks for it", () => {
-      expect(canEnter("commit", { ...ready, hasAskingPrice: false, hasAppraisal: false }).ok).toBe(true);
+    it("does not need a price: the market is looked up first", () => {
+      expect(canEnter("appraise", unpriced).ok).toBe(true);
+      expect(canEnter("appraise", { ...unpriced, assistantTurns: 0 }).ok).toBe(false);
     });
   });
 
-  describe("appraise", () => {
-    it("re-checks the questions, the photo and the locked price", () => {
-      expect(canEnter("appraise", ready).ok).toBe(true);
-      expect(canEnter("appraise", { ...ready, assistantTurns: 0 }).ok).toBe(false);
-      expect(canEnter("appraise", { ...ready, photoCount: 0 }).ok).toBe(false);
+  describe("commit", () => {
+    it("needs the market to have been looked up: the price is set having seen it", () => {
+      expect(canEnter("commit", { ...ready, hasAskingPrice: false }).ok).toBe(true);
+      const result = canEnter("commit", { ...ready, hasMarket: false, hasAskingPrice: false });
+      expect(result.ok).toBe(false);
+      expect(reason(result)).toMatch(/market has been looked up/);
+    });
 
-      const unlocked = canEnter("appraise", { ...ready, hasAskingPrice: false });
-      expect(unlocked.ok).toBe(false);
-      expect(reason(unlocked)).toMatch(/locked in their own price/);
+    it("does not need a price yet: this is the step that asks for it", () => {
+      expect(canEnter("commit", { ...ready, hasAskingPrice: false }).ok).toBe(true);
     });
   });
 
   describe("verdict", () => {
-    it("needs an appraisal", () => {
+    it("needs a market and a locked price", () => {
       expect(canEnter("verdict", ready).ok).toBe(true);
-      const result = canEnter("verdict", { ...ready, hasAppraisal: false });
-      expect(result.ok).toBe(false);
-      expect(reason(result)).toMatch(/market/);
+
+      const noMarket = canEnter("verdict", { ...ready, hasMarket: false });
+      expect(noMarket.ok).toBe(false);
+      expect(reason(noMarket)).toMatch(/market/);
+
+      const noPrice = canEnter("verdict", { ...ready, hasAskingPrice: false });
+      expect(noPrice.ok).toBe(false);
+      expect(reason(noPrice)).toMatch(/locked in their price/);
     });
+  });
+});
+
+describe("stage order", () => {
+  it("looks up and shows the market before it asks for a price", () => {
+    expect(STAGES.indexOf("probe")).toBeLessThan(STAGES.indexOf("appraise"));
+    expect(STAGES.indexOf("appraise")).toBeLessThan(STAGES.indexOf("commit"));
+    expect(STAGES.indexOf("commit")).toBeLessThan(STAGES.indexOf("verdict"));
+    expect(STAGE_LABELS.appraise).toBe("The market");
+    expect(STAGE_LABELS.commit).toBe("Your price");
   });
 });
 
@@ -96,6 +115,7 @@ describe("stage tables", () => {
 describe("the opening reminders", () => {
   it("tells the intake not to repeat what the app already showed", () => {
     expect(STAGE_INSTRUCTIONS.intake).toMatch(/already shown them two reminders/);
+    expect(STAGE_INSTRUCTIONS.intake).toMatch(/a few questions, then the market, then their own price/);
     expect(STAGE_INSTRUCTIONS.intake).toMatch(/Do not repeat either reminder/);
   });
 
@@ -106,11 +126,11 @@ describe("the opening reminders", () => {
   });
 });
 
-describe("readyToPrice", () => {
+describe("readyForMarket", () => {
   it("is what the market lookup is gated on, and it never asks for a price", () => {
-    expect(readyToPrice({ ...ready, hasAskingPrice: false, hasAppraisal: false })).toBeNull();
-    expect(readyToPrice({ ...ready, assistantTurns: 0 })).toMatch(/not spoken/);
-    expect(readyToPrice({ ...ready, photoCount: 0 })).toMatch(/photo/);
+    expect(readyForMarket({ ...ready, hasMarket: false, hasAskingPrice: false })).toBeNull();
+    expect(readyForMarket({ ...ready, assistantTurns: 0 })).toMatch(/not spoken/);
+    expect(readyForMarket({ ...ready, photoCount: 0 })).toMatch(/photo/);
   });
 });
 
@@ -131,13 +151,14 @@ describe("the probe instruction", () => {
   it("checks the whole conversation before asking, and never asks a fact twice", () => {
     for (const stage of ["intake", "probe"] as const) {
       expect(STAGE_INSTRUCTIONS[stage]).toMatch(/description/);
-      expect(STAGE_INSTRUCTIONS[stage]).toMatch(/commit phase/);
+      expect(STAGE_INSTRUCTIONS[stage]).toMatch(/appraise phase/);
     }
     expect(STAGE_INSTRUCTIONS.probe).toMatch(/Never ask for a fact they have already answered/);
   });
 
-  it("only mentions the price box to someone who raised price", () => {
+  it("only mentions the price box to someone who raised price, and puts it after the market", () => {
     expect(STAGE_INSTRUCTIONS.probe).toMatch(/Only if they say what they want to sell it for/);
+    expect(STAGE_INSTRUCTIONS.probe).toMatch(/after they have seen it/);
   });
 });
 
@@ -176,7 +197,7 @@ describe("opensLikePrompt", () => {
     expect(opensLikePrompt(instruction.slice(0, 80))).toBe(true);
   });
 
-  it.each(["## Protocol version: v2", "**Protocol version** v2"])(
+  it.each(["## Protocol version: v3", "**Protocol version** v3"])(
     "recognises it dressed up as markdown: %j",
     (text) => expect(opensLikePrompt(text)).toBe(true),
   );

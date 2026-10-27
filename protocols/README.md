@@ -1,6 +1,6 @@
 # The protocol documents
 
-`protocol_v2.md` is the instrument. Everything the assistant does — what it asks,
+`protocol_v3.md` is the instrument. Everything the assistant does — what it asks,
 what it withholds, how it argues the verdict — is in there, so changing it
 changes the intervention itself.
 
@@ -8,7 +8,8 @@ changes the intervention itself.
 
 | File | What it is |
 |---|---|
-| `protocol_v2.md` | The used-item pricing protocol, on loss aversion (Novemsky & Kahneman 2005). |
+| `protocol_v3.md` | The used-item pricing protocol, on loss aversion (Novemsky & Kahneman 2005). The market is looked up and shown before the person names a price. |
+| `protocol_v2.md` | The previous version: the person names a price first, as an uncoached baseline, and then sees the market. Kept so those runs can be reproduced; not loaded by default. |
 
 `protocol_v1.md` (sunk cost, a five-dimension decision grader) and `_template.md`
 were removed when the product became a resale price assistant. They are still in
@@ -25,15 +26,15 @@ the instrument. It holds:
 - the four things to find out — model, what they paid and when, how long they
   have used it, condition against the photos,
 - the phases, written as prose a Gem can follow,
-- the guardrails, chiefly **no price of any kind before they have named theirs**.
+- the guardrails, chiefly **no price of any kind that the assistant was not given**.
 
 Everything after it is the *harness notes*: the four things the app does that a
 Gem cannot. They are scaffolding for this repo and are not sent to the model.
 
 ## Versioning
 
-**Never edit a protocol that is in use.** Copy it to `protocol_v3.md`, change the
-copy, and set `PROTOCOL_FILE=protocol_v3.md`. Two people running different
+**Never edit a protocol that is in use.** Copy it to `protocol_v4.md`, change the
+copy, and set `PROTOCOL_FILE=protocol_v4.md`. Two people running different
 wordings of the same instrument and calling the result the same thing is how a
 comparison quietly stops meaning anything.
 
@@ -55,8 +56,8 @@ things in the code assume what it says:
   asks for four things, one per turn, the first already asked in the opening
   turn. Change the protocol's list and you change that number and the server's
   gate with it.
-- **The two markers**, `[[STAGE:commit]]` and `[[STAGE:complete]]`. They are
-  appended by the app (`MARKER_RULE` in `lib/gemini.ts`) and are not part of the
+- **The two markers**, `[[STAGE:appraise]]` and `[[STAGE:complete]]`. They are
+  appended by the app (`MARKER_RULE` in `lib/prompts.ts`) and are not part of the
   Gem core, because a Gem has nowhere to hide control text.
 
 ## The Gem

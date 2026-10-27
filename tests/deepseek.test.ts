@@ -254,7 +254,7 @@ describe("streamReply", () => {
   });
 
   it("keeps stage markers in the text for the caller to strip, as Gemini's do", async () => {
-    expect(await collect(stub(sse([delta("Ready.\n[[STAGE:commit]]"), "data: [DONE]"])))).toBe("Ready.\n[[STAGE:commit]]");
+    expect(await collect(stub(sse([delta("Ready.\n[[STAGE:appraise]]"), "data: [DONE]"])))).toBe("Ready.\n[[STAGE:appraise]]");
   });
 
   it("ignores a line it cannot parse rather than failing the reply", async () => {

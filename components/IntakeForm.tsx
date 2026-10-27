@@ -45,8 +45,8 @@ export function IntakeForm({
         <p className="max-w-[56ch] text-[15px] leading-relaxed text-ink-secondary">
           Made by VIBE to help you price something you are about to sell, so it
           actually sells. Start with the item and a photo, then a few short
-          questions. After you name your price you get used listings of the same
-          model, a suggested price, and where to sell.
+          questions. Then you see used listings of the same model and a suggested
+          price, name your own, and get where to sell.
         </p>
       </header>
 

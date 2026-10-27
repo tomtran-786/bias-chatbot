@@ -6,17 +6,16 @@
  * streamed back. Nothing is persisted anywhere.
  *
  * The one thing the server does insist on is that the phase being requested is
- * reachable — that the assistant has actually asked its questions before a price
- * can be recorded, and that there is a market before a verdict. That guards
- * against the model drifting out of order, which is the failure this design
+ * reachable — that the assistant has actually asked its questions before the market
+ * is looked up, and that there is a market and a price before a verdict. That
+ * guards against the model drifting out of order, which is the failure this design
  * exists to prevent. It is not a security boundary; see `canEnter` in
  * lib/stages.ts.
  *
  * Two things it does on the model's behalf. It recomputes every number from the
  * raw listings the browser posts back, so a median the client sends is never
- * believed. And it keeps the locked price and the market out of the intake and
- * question turns, so the assistant cannot be nudged by a figure it must not
- * mention yet.
+ * believed. And it keeps the price and the market out of the intake and question
+ * turns, so the assistant cannot be nudged by a figure it must not mention yet.
  *
  * Replies come back as newline-delimited JSON rather than raw text so that phase
  * transitions and quota errors can be signalled mid-stream alongside the words.
@@ -73,11 +72,6 @@ const bodySchema = z.object({
   message: z.string().trim().min(1).max(4000),
   /** Photos that first appear in `message`. */
   messagePhotoIds: z.array(z.string().min(1).max(64)).max(MAX_PHOTOS).optional(),
-  /**
-   * Their price is locked in, though not sent: a lookup that sent them back to the
-   * questions leaves it so. Tells the assistant not to ask for it again.
-   */
-  priceLocked: z.boolean().optional(),
 });
 
 type Event =
@@ -92,15 +86,12 @@ type Event =
  * Written by the app, so it can be trusted to say the right thing: the model has
  * just shown it will answer a price typed into the chat as if it had a market.
  */
-const TAKE_PRICE_IN_BOX =
-  "Thanks. Enter your price in the box below and lock it in, and I'll look up the market against it.";
-/** The same, once the price is already locked and the way on is the lookup button. */
-const PRICE_ALREADY_LOCKED =
-  "Your price is locked in — press Look up the market when you're ready.";
+const LOOK_UP_MARKET_FIRST =
+  "Thanks. I'll look up the market now. Once you've seen it, you'll set your price.";
 const REPLY_WENT_WRONG =
   "Sorry, that reply went wrong. Please send your last message again.";
 const FINISH_QUESTIONS_FIRST =
-  "I can't weigh in on a price yet: I have no market data, and I'm still getting the details I need. Let's finish the questions first, then you'll set your price before I look anything up.";
+  "I can't weigh in on a price yet: I have no market data, and I'm still getting the details I need. Let's finish the questions first, then I'll look up the market and you'll set your price.";
 
 export async function POST(request: Request) {
   const parsed = bodySchema.safeParse(await request.json().catch(() => null));
@@ -115,7 +106,6 @@ export async function POST(request: Request) {
     transcript,
     message,
     messagePhotoIds,
-    priceLocked,
   } = parsed.data;
 
   const history: TranscriptMessage[] = [
@@ -137,9 +127,8 @@ export async function POST(request: Request) {
   const phaseContext = {
     assistantTurns: assistantTurns(transcript),
     photoCount: photoCount(history),
+    hasMarket: appraisalInput !== undefined,
     hasAskingPrice: askingPrice !== undefined,
-    // The figures are computed from the price, so one without the other is none.
-    hasAppraisal: appraisalInput !== undefined && askingPrice !== undefined,
   };
 
   const gate = canEnter(phase, phaseContext);
@@ -165,13 +154,11 @@ export async function POST(request: Request) {
     throw error;
   }
 
-  // Everything below is the verdict's alone. After a failed lookup the person
-  // goes back to the questions with their price still locked, and a probe turn
-  // that could see it would be answering with the number in its prompt.
+  // The price and the market are the verdict's alone: a question that could see
+  // them would be answering with the numbers in its prompt.
   const context: TurnContext = {
     intake,
     photoCount: phaseContext.photoCount,
-    ...(phase !== "verdict" && priceLocked ? { priceLocked: true } : {}),
   };
   if (phase === "verdict" && appraisalInput && askingPrice) {
     context.askingPrice = askingPrice;
@@ -192,15 +179,15 @@ export async function POST(request: Request) {
             send({ t: "stage", v: next });
             return;
           }
-          if (next === "commit" && phase !== "verdict") {
+          if (next === "appraise" && phase !== "verdict") {
             // The reply being written is itself an assistant turn, and counts. The
             // assistant decides when it has the facts, so one reply is enough.
-            const early = canEnter("commit", {
+            const early = canEnter("appraise", {
               ...phaseContext,
               assistantTurns: phaseContext.assistantTurns + 1,
             });
             if (early.ok) send({ t: "stage", v: next });
-            else console.warn("dropped an early commit marker:", early.reason);
+            else console.warn("dropped an early appraise marker:", early.reason);
           }
           // Anything else is a marker the model was never given.
         },
@@ -242,10 +229,9 @@ export async function POST(request: Request) {
           console.warn(
             `dropped a reply that ${drifted === "prompt" ? "began with the system prompt" : "was shaped like a verdict"} in the ${phase} phase`,
           );
-          // Once the questions are done the next step is the price box whatever
-          // the model said, so that is where the person is sent; with the price
-          // already locked it is the lookup button. Before then the reply is
-          // replaced and nothing else changes.
+          // Once the questions are done the next step is the market lookup whatever
+          // the model said, so that is where the person is sent. Before then the
+          // reply is replaced and nothing else changes.
           const ready = askedEnough({
             ...phaseContext,
             assistantTurns: phaseContext.assistantTurns + 1,
@@ -253,14 +239,12 @@ export async function POST(request: Request) {
           send({
             t: "text",
             v: ready
-              ? priceLocked
-                ? PRICE_ALREADY_LOCKED
-                : TAKE_PRICE_IN_BOX
+              ? LOOK_UP_MARKET_FIRST
               : drifted === "prompt"
                 ? REPLY_WENT_WRONG
                 : FINISH_QUESTIONS_FIRST,
           });
-          if (ready && !priceLocked) send({ t: "stage", v: "commit" });
+          if (ready) send({ t: "stage", v: "appraise" });
         } else {
           filter.end();
         }

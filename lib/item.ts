@@ -154,16 +154,16 @@ export const FRAMING = {
   intro:
     "Before we get to condition and price, keep two things in mind. They help you pick a price that actually sells:",
   outro:
-    "Now you have a good point of view. Let’s get it sold: a few quick questions about its condition, then you set your price, and then we look at how the market prices it together.",
+    "Now you have a good point of view. Let’s get it sold: a few quick questions about its condition, then we look at what the market is paying, and then you set your price.",
 } as const;
 
 /**
- * The asking price, recorded before the market is looked up.
+ * The asking price, recorded once and then fixed.
  *
- * This is the step a Gem cannot hold. The anchor study measures what owners
- * would sell for, and that measurement only means something if it is taken
- * before anything else has had a chance to move it. In a chat window the person
- * can read ahead; here the market data does not exist until this is submitted.
+ * It is asked for after the market has been shown, so it is a price set with the
+ * market in view and not an uncoached baseline. Fixing it on submit is what lets
+ * the comparison, and the verdict that follows, be set against the number the
+ * person actually committed to.
  */
 export type AskingPrice = {
   /** US dollars. */
@@ -177,9 +177,9 @@ export const askingPriceSchema = z.object({
 });
 
 export const ASKING_PRICE_PROMPT = {
-  eyebrow: "Before you see the market",
+  eyebrow: "Now it’s your call",
   question: "What price would you list it at?",
-  hint: "In US dollars. It is recorded as you enter it and cannot be changed afterwards — that is what makes it worth comparing against.",
+  hint: "In US dollars, now that you have seen what the market is paying. It is recorded as you enter it and cannot be changed afterwards.",
 } as const;
 
 /** Condition as extracted from the conversation. Distinct from a listing's. */
@@ -398,16 +398,16 @@ export function describeItem(
   ].join("\n");
 }
 
-/** The locked-in price as the model receives it, once it exists. */
+/** The locked-in price as the model receives it, once it exists (the verdict turn). */
 export function describeAskingPrice(
   asking: AskingPrice,
   format: (usd: number) => string,
 ): string {
   return [
-    "## The price they locked in before seeing the market",
+    "## The price they locked in, having seen the market",
     "",
     `They would list it at ${format(asking.usd)}.`,
     "",
-    "It is a baseline, not a constraint on what you recommend. Do not flatter it and do not defer to it.",
+    "It is their number, not a constraint on what you recommend. Do not flatter it and do not defer to it.",
   ].join("\n");
 }

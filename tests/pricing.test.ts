@@ -10,6 +10,7 @@ import {
   appraisalInputSchema,
   byPlatform,
   computeAppraisal,
+  computeMarketView,
   describeAppraisal,
   formatPct,
   formatUsd,
@@ -18,6 +19,7 @@ import {
   groundNewPrice,
   listingPrice,
   marketHeadline,
+  marketOnlyHeadline,
   median,
   parsePriceText,
   quartiles,
@@ -703,6 +705,78 @@ describe("the new price on the appraisal", () => {
       positionEvidence: "",
     });
     expect(parsed.newPriceUrl).toBeNull();
+  });
+});
+
+describe("the market before a price is named", () => {
+  const input = (listings: GroundedListing[], position: Position = "typical") => ({
+    listings,
+    newPrice: null,
+    position,
+    positionEvidence: "photos show light wear",
+  });
+
+  it("is the same market the appraisal sets their price against", () => {
+    const listings = many([90, 95, 100, 105, 110]);
+    const view = computeMarketView(input(listings));
+    const appraisal = computeAppraisal(input(listings), 120);
+
+    const { asking, gap: gapToMarket, overpriced, ...market } = appraisal;
+    expect(view).toEqual(market);
+    expect(asking).toBe(120);
+    expect(gapToMarket).toEqual({ amount: 20, pct: 0.2 });
+    expect(overpriced).toBe(true);
+  });
+
+  it("holds nothing of theirs: no price, no gap, no verdict on it", () => {
+    const view = computeMarketView(input(many([90, 95, 100, 105, 110])));
+    expect(view).not.toHaveProperty("asking");
+    expect(view).not.toHaveProperty("gap");
+    expect(view).not.toHaveProperty("overpriced");
+    expect(view.market.median).toBe(100);
+    expect(view.suggested).not.toBeNull();
+  });
+
+  it("falls back to depreciation, or to nothing, exactly as the appraisal does", () => {
+    const item = { purchasePrice: 1000, ageMonths: 18, category: "phone_tablet" as const };
+    const estimate = computeMarketView({ ...input([]), item });
+    expect(estimate.market.tier).toBe("estimate");
+    expect(estimate.market.median).toBe(computeAppraisal({ ...input([]), item }, 500).market.median);
+    expect(computeMarketView(input([])).market.tier).toBe("none");
+  });
+});
+
+describe("marketOnlyHeadline", () => {
+  const item = { model: "iPhone 13" };
+
+  it("names the figure the market gives, before there is a price to compare", () => {
+    const view = computeMarketView({
+      listings: many([90, 95, 100, 105, 110]),
+      newPrice: null,
+      position: "typical",
+      positionEvidence: "",
+    });
+    expect(marketOnlyHeadline({ item, market: view.market })).toBe(
+      "Market median for your iPhone 13: $100",
+    );
+  });
+
+  it("calls an average an average and an estimate an estimate", () => {
+    expect(
+      marketOnlyHeadline({ item, market: { method: "mean", median: 250 } }),
+    ).toBe("Market average for your iPhone 13: $250");
+    expect(
+      marketOnlyHeadline({ item, market: { method: "depreciation", median: 410 } }),
+    ).toBe("Depreciated value for your iPhone 13: $410");
+  });
+
+  it("says there is too little to go on when the market has no figure", () => {
+    expect(marketOnlyHeadline({ item, market: { method: null, median: null } })).toBe(
+      "Too few verified listings to price your iPhone 13",
+    );
+    expect(
+      marketOnlyHeadline({ item: { model: "" }, market: { method: null, median: null } }),
+    ).toBe("Too few verified listings to price your item");
   });
 });
 

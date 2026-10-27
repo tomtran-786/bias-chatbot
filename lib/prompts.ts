@@ -60,11 +60,11 @@ export const MARKER_RULE = [
   "When, and only when, the current phase's goal is met, emit a marker on its own line at the very end of your turn:",
   "",
   "```",
-  "[[STAGE:commit]]      — you have all four facts: the model, what they paid and when, how long they have used it, and the condition",
+  "[[STAGE:appraise]]    — you have all four facts: the model, what they paid and when, how long they have used it, and the condition",
   "[[STAGE:complete]]    — you have delivered the verdict",
   "```",
   "",
-  "These two are the only markers you ever emit. Emit at most one per turn, only at a genuine transition. The commit marker may end your very first reply, when everything you need is already in what they told you; otherwise never emit a marker in the turn that began a phase. The person does not see them. Do not mention them.",
+  "These two are the only markers you ever emit. Emit at most one per turn, only at a genuine transition. The appraise marker may end your very first reply, when everything you need is already in what they told you; otherwise never emit a marker in the turn that began a phase. The person does not see them. Do not mention them.",
 ].join("\n");
 
 /**
@@ -78,18 +78,7 @@ export type TurnContext = {
   askingPrice?: AskingPrice;
   item?: ItemFacts;
   appraisal?: Appraisal;
-  /**
-   * They have locked in a price you are not shown. Set only for the questions that
-   * follow a lookup that sent them back, so you do not ask for the price again.
-   */
-  priceLocked?: boolean;
 };
-
-const PRICE_LOCKED = [
-  "## Their price",
-  "",
-  "They have already locked in the price they would list it at. You are not told what it is. Do not ask for a price, do not tell them to enter one, and do not mention a price box. When you have what you need, tell them to press 'Look up the market'.",
-].join("\n");
 
 export function systemInstruction(
   stage: Stage,
@@ -109,7 +98,6 @@ export function systemInstruction(
       ? ["", describeAskingPrice(context.askingPrice, formatUsd)]
       : []),
     ...(context.appraisal ? ["", describeAppraisal(context.appraisal)] : []),
-    ...(context.priceLocked ? ["", PRICE_LOCKED] : []),
     "",
     "---",
     "",

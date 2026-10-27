@@ -13,7 +13,7 @@
  * Pure, and free of `server-only`: the cards and the verdict strip both use it.
  */
 import { isVndText } from "./currency";
-import type { Appraisal, PlatformSummary, PricedListing } from "./pricing";
+import type { MarketView, PlatformSummary, PricedListing } from "./pricing";
 
 export type CitedListing = {
   /** 1-based; the `[n]` shown wherever this listing is mentioned. */
@@ -65,7 +65,7 @@ export function originalPrice(listing: Pick<PricedListing, "priceText">): string
 
 /** One line on the conversion, when any listing shown was priced in đồng; otherwise null. */
 export function conversionNote(
-  appraisal: Pick<Appraisal, "listings"> & { raw: { vndPerUsd: number } },
+  appraisal: Pick<MarketView, "listings"> & { raw: { vndPerUsd: number } },
 ): string | null {
   const shown = appraisal.listings.some((listing) => originalPrice(listing) !== null);
   return shown
@@ -74,7 +74,7 @@ export function conversionNote(
 }
 
 export function citeListings(
-  appraisal: Pick<Appraisal, "listings" | "platforms">,
+  appraisal: Pick<MarketView, "listings" | "platforms">,
 ): Citations {
   let n = 0;
   const cite = (listing: PricedListing): CitedListing => ({

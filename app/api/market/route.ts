@@ -6,8 +6,7 @@
  *   read    the item + the sources       -> listings, checked against them (1 model call)
  *
  * Split so that each step has a whole 60-second function to itself, a step that
- * fails can be tried again without redoing the ones before it, and the browser can
- * start the lot while the person is still deciding on a price. The browser runs the
+ * fails can be tried again without redoing the ones before it. The browser runs the
  * steps in order (lib/market-client.ts) and computes the figures itself from what
  * `read` returns (lib/pricing.ts); nothing here prices anything.
  *
@@ -15,8 +14,8 @@
  * Every price the model reports is checked against the text of the source it cites,
  * in `groundListings`, and a listing in đồng carries the rate it is converted at.
  *
- * None of the steps is shown, or needs, the price the person locks in, which is why
- * the lookup may run before they have set one. What they paid is stripped before
+ * None of the steps is shown, or needs, a price the person sets, which is why the
+ * lookup runs before they have set one. What they paid is stripped before
  * anything is searched or read (`forSearch`), exactly as before.
  *
  * Refuses to run before the assistant has spoken and there is a photo. A fact the
@@ -66,7 +65,7 @@ import {
   limitSources,
   toSources,
 } from "@/lib/sources";
-import { readyToPrice } from "@/lib/stages";
+import { readyForMarket } from "@/lib/stages";
 import {
   assistantTurns,
   photoCount,
@@ -194,11 +193,11 @@ export async function POST(request: Request) {
     body.step === "facts" ? checkPhotos(body.photos, referencedPhotoIds(transcript)) : null;
   if (photos && !photos.ok) return refuse(step, photos.error, photos.status);
 
-  const problem = readyToPrice({
+  const problem = readyForMarket({
     assistantTurns: assistantTurns(transcript),
     photoCount: photoCount(transcript),
+    hasMarket: false,
     hasAskingPrice: false,
-    hasAppraisal: false,
   });
   if (problem) return refuse(step, "out_of_order", 409, `Cannot look up the market yet. ${problem}`);
 

@@ -17,16 +17,37 @@ import {
   formatUsd,
   formatUsdWhole,
   marketHeadline,
+  marketOnlyHeadline,
   type AppraiseResponse,
+  type MarketResponse,
 } from "@/lib/pricing";
 
 /**
- * The market, laid out for one decision: is my price in line with what people
- * are paying?
+ * True a moment after the card appears. The card can show up under the pointer
+ * that caused it, and a second click of a double-click would otherwise press its
+ * button before anything was read.
+ */
+function useSettled(): boolean {
+  const [settled, setSettled] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setSettled(true), 800);
+    return () => clearTimeout(timer);
+  }, []);
+  return settled;
+}
+
+/**
+ * The market, laid out for one decision: what are people paying for this?
  *
- * One story, told top to bottom. The title is the takeaway ("Your $520 is 24%
- * above the market median"), and everything under it is the evidence for it,
- * ending at the conclusion — the suggested price — and the sources it stands on.
+ * Two cards tell it in two moments. `MarketCard` comes first, before the person has
+ * named a price, and is all the evidence: the market's figure, where the listings
+ * sit, the suggested price and the sources it stands on. `ComparisonCard` comes
+ * after they have named one, and sets the two side by side without repeating the
+ * evidence.
+ *
+ * One story, told top to bottom. The title is the takeaway ("Market median for your
+ * iPad Air: $410", then "Your $520 is 24% above the market median"), and everything
+ * under it is the evidence for it.
  *
  * The forms follow from what each piece of data has to do. Two numbers the
  * reader compares — their price and the market median — are a pair of large
@@ -34,8 +55,9 @@ import {
  * price axis, because the question is "where does my price sit among them", and
  * a strip answers that with position alone. It uses the emphasis form: every
  * listing is the same neutral grey, and the one accent is their own price,
- * the thing the story is about. There are no gridlines and no legend: the two
- * lines that matter are labelled where they are, and one caption says the rest.
+ * the thing the story is about. Before they have named one the strip carries the
+ * median alone. There are no gridlines and no legend: the lines that matter are
+ * labelled where they are, and one caption says the rest.
  *
  * Every price that came from the web is a numbered, clickable source. The same
  * `[n]` marks the dot, the row below and the verdict's sources line
@@ -43,46 +65,44 @@ import {
  * strip's hover would show is also in the rows below it, so there is no
  * information only a pointer can reach.
  */
+
 export function MarketCard({
-  appraisal,
+  market: view,
   canContinue,
-  pending,
   onContinue,
 }: {
-  appraisal: AppraiseResponse;
+  market: MarketResponse;
   canContinue: boolean;
-  pending: boolean;
   onContinue: () => void;
 }) {
-  const { market, suggested } = appraisal;
-  const citations = citeListings(appraisal);
-
-  // The lookup is usually done by the time the price is locked, so this card can
-  // appear under the pointer that locked it. A second click of a double-click would
-  // then press "See my verdict" before the person has seen a figure.
-  const [settled, setSettled] = useState(false);
-  useEffect(() => {
-    const timer = setTimeout(() => setSettled(true), 800);
-    return () => clearTimeout(timer);
-  }, []);
+  const { market, suggested } = view;
+  const citations = citeListings(view);
+  const settled = useSettled();
 
   return (
     <article className="rise overflow-hidden rounded-3xl bg-surface shadow-soft">
       <header className="flex flex-col gap-1.5 border-b border-rule px-5 py-5 sm:px-6">
         <h2 className="text-lg leading-snug font-semibold tracking-tight text-pretty">
-          {marketHeadline(appraisal)}
+          {marketOnlyHeadline(view)}
         </h2>
-        <p className="text-sm leading-relaxed text-ink-secondary">{subtitle(appraisal)}</p>
+        <p className="text-sm leading-relaxed text-ink-secondary">{subtitle(view)}</p>
       </header>
 
-      <PricePair appraisal={appraisal} />
+      <div className="border-b border-rule bg-surface">
+        <Figure
+          label={marketLabel(market.method)}
+          keyColor="var(--ink)"
+          value={market.median === null ? "—" : formatUsd(market.median)}
+          note={rangeNote(market)}
+        />
+      </div>
 
       {market.count > 0 ? (
-        <Strip appraisal={appraisal} counted={citations.counted} />
+        <Strip view={view} asking={null} counted={citations.counted} />
       ) : null}
 
       {suggested ? (
-        <Suggestion appraisal={appraisal} countedCount={citations.counted.length} />
+        <Suggestion view={view} countedCount={citations.counted.length} />
       ) : null}
 
       {citations.counted.length > 0 ? (
@@ -126,18 +146,18 @@ export function MarketCard({
           {market.tier === "estimate"
             ? "No listings could be confirmed, so this is calculated from what you paid, not seen in the market."
             : "Prices from public listings found by web search. Asking and sold prices, not offers you’ll receive."}
-          {conversionNote(appraisal) ? ` ${conversionNote(appraisal)}` : ""}
+          {conversionNote(view) ? ` ${conversionNote(view)}` : ""}
         </p>
         <details>
           <summary className="cursor-pointer text-xs font-medium text-ink-secondary">
             How this was worked out
           </summary>
           <div className="mt-2 flex flex-col gap-3 text-xs leading-relaxed text-ink-muted">
-            {appraisal.queries.length > 0 ? (
+            {view.queries.length > 0 ? (
               <div className="flex flex-col gap-1">
                 <p className="font-medium text-ink-secondary">Searched for</p>
                 <ul className="flex flex-col gap-0.5">
-                  {appraisal.queries.map((query) => (
+                  {view.queries.map((query) => (
                     <li key={query}>“{query}”</li>
                   ))}
                 </ul>
@@ -166,10 +186,10 @@ export function MarketCard({
           <button
             type="button"
             onClick={onContinue}
-            disabled={pending || !settled}
+            disabled={!settled}
             className="btn-primary mt-1 self-start px-6 py-3 text-sm font-medium"
           >
-            {pending ? "Thinking…" : "See my verdict"}
+            Set my price
           </button>
         ) : null}
       </footer>
@@ -177,20 +197,68 @@ export function MarketCard({
   );
 }
 
-/** The model, then what the median was made of; and, if it applies, why the price is flagged. */
-function subtitle(a: AppraiseResponse): string {
-  return [
-    a.item.model ? `${a.item.model}.` : null,
-    basisSentence(a),
-    a.overpriced
-      ? `Past the ${Math.round(OVERPRICED_AT * 100)}% mark this check uses for a price that is running high.`
-      : null,
-  ]
+/**
+ * Their price against the market, once they have named one. The evidence is the
+ * card above; this is only the comparison and the way on to the verdict.
+ */
+export function ComparisonCard({
+  appraisal,
+  canContinue,
+  pending,
+  onContinue,
+}: {
+  appraisal: AppraiseResponse;
+  canContinue: boolean;
+  pending: boolean;
+  onContinue: () => void;
+}) {
+  const { market } = appraisal;
+  const citations = citeListings(appraisal);
+  const settled = useSettled();
+
+  return (
+    <article className="rise overflow-hidden rounded-3xl bg-surface shadow-soft">
+      <header className="flex flex-col gap-1.5 border-b border-rule px-5 py-5 sm:px-6">
+        <h2 className="text-lg leading-snug font-semibold tracking-tight text-pretty">
+          {marketHeadline(appraisal)}
+        </h2>
+        {appraisal.overpriced ? (
+          <p className="text-sm leading-relaxed text-ink-secondary">
+            {`Past the ${Math.round(OVERPRICED_AT * 100)}% mark this check uses for a price that is running high.`}
+          </p>
+        ) : null}
+      </header>
+
+      <PricePair appraisal={appraisal} />
+
+      {market.count > 0 ? (
+        <Strip view={appraisal} asking={appraisal.asking} counted={citations.counted} />
+      ) : null}
+
+      {canContinue ? (
+        <footer className="bg-sunken px-5 py-5 sm:px-6">
+          <button
+            type="button"
+            onClick={onContinue}
+            disabled={pending || !settled}
+            className="btn-primary self-start px-6 py-3 text-sm font-medium"
+          >
+            {pending ? "Thinking…" : "See my verdict"}
+          </button>
+        </footer>
+      ) : null}
+    </article>
+  );
+}
+
+/** The model, then what the median was made of. */
+function subtitle(a: MarketResponse): string {
+  return [a.item.model ? `${a.item.model}.` : null, basisSentence(a)]
     .filter(Boolean)
     .join(" ");
 }
 
-function basisSentence(a: AppraiseResponse): string {
+function basisSentence(a: MarketResponse): string {
   const { market } = a;
   if (market.tier === "none") {
     return `Found ${a.listings.length} listing${a.listings.length === 1 ? "" : "s"}, but none could be verified, and there is not enough about what you paid and how long you used it to estimate a price.`;
@@ -212,7 +280,7 @@ function basisSentence(a: AppraiseResponse): string {
 }
 
 /** Why the suggestion sits where it does. The new-price cap is added by the caller, as a link. */
-function suggestionNote(a: AppraiseResponse): string {
+function suggestionNote(a: MarketResponse): string {
   const { suggested, market } = a;
   if (!suggested) return "";
   const parts: string[] = [];
@@ -244,16 +312,16 @@ const linkClass =
   "underline decoration-rule-strong underline-offset-4 transition-colors hover:decoration-ink";
 
 function Suggestion({
-  appraisal,
+  view,
   countedCount,
 }: {
-  appraisal: AppraiseResponse;
+  view: MarketResponse;
   countedCount: number;
 }) {
-  const { suggested, newPrice } = appraisal;
+  const { suggested, newPrice } = view;
   if (!suggested) return null;
 
-  const newHref = safeHref(appraisal.newPriceUrl);
+  const newHref = safeHref(view.newPriceUrl);
   const newHost = hostLabel(newHref);
 
   return (
@@ -263,7 +331,7 @@ function Suggestion({
       </p>
       <p className="text-3xl font-semibold tracking-tight">{formatUsd(suggested.price)}</p>
       <p className="text-sm leading-relaxed text-ink-secondary">
-        {suggestionNote(appraisal)}
+        {suggestionNote(view)}
         {suggested.capped && newPrice !== null ? (
           <>
             {" "}
@@ -300,30 +368,35 @@ function PricePair({ appraisal }: { appraisal: AppraiseResponse }) {
         label="Your price"
         keyColor="var(--accent)"
         value={formatUsd(appraisal.asking)}
-        note="Locked before the lookup"
+        note="Locked in after seeing the market"
       />
       <Figure
-        label={
-          market.method === "mean"
-            ? "Market average"
-            : market.method === "depreciation"
-              ? "Estimated value"
-              : "Market median"
-        }
+        label={marketLabel(market.method)}
         keyColor="var(--ink)"
         value={market.median === null ? "—" : formatUsd(market.median)}
-        note={
-          market.q1 !== null && market.q3 !== null
-            ? `Middle half: ${formatUsdWhole(market.q1)}–${formatUsdWhole(market.q3)}`
-            : market.tier === "thin" || market.tier === "sparse"
-              ? `${market.count} listing${market.count === 1 ? "" : "s"}`
-              : market.tier === "estimate"
-                ? "Straight-line depreciation"
-                : "Not enough to price"
-        }
+        note={rangeNote(market)}
       />
     </div>
   );
+}
+
+function marketLabel(method: MarketResponse["market"]["method"]): string {
+  return method === "mean"
+    ? "Market average"
+    : method === "depreciation"
+      ? "Estimated value"
+      : "Market median";
+}
+
+/** What stands behind the market's figure, in a few words. */
+function rangeNote(market: MarketResponse["market"]): string {
+  return market.q1 !== null && market.q3 !== null
+    ? `Middle half: ${formatUsdWhole(market.q1)}–${formatUsdWhole(market.q3)}`
+    : market.tier === "thin" || market.tier === "sparse"
+      ? `${market.count} listing${market.count === 1 ? "" : "s"}`
+      : market.tier === "estimate"
+        ? "Straight-line depreciation"
+        : "Not enough to price";
 }
 
 function Figure({
@@ -387,6 +460,13 @@ function anchorFor(
   return "center";
 }
 
+/** Which way a label hangs when it has no neighbour: toward the middle, away from the edge. */
+function anchorAlone(x: number): "start" | "center" | "end" {
+  if (x < 14) return "start";
+  if (x > 86) return "end";
+  return "center";
+}
+
 const ANCHOR_SHIFT = { start: "0%", center: "-50%", end: "-100%" } as const;
 
 const DOT = 10; // px, the visible dot
@@ -394,17 +474,23 @@ const HIT = 24; // px, the target around it
 const ROW = 20; // px between stacked dots
 
 function Strip({
-  appraisal,
+  view,
+  asking,
   counted,
 }: {
-  appraisal: AppraiseResponse;
+  view: MarketResponse;
+  /** Their price, once they have named one. Before that the strip has no line of theirs. */
+  asking: number | null;
   counted: CitedListing[];
 }) {
   const [active, setActive] = useState<number | null>(null);
-  const { market } = appraisal;
+  const { market } = view;
   const median = market.median!;
 
-  const values = [...counted.map((c) => c.listing.price), appraisal.asking];
+  const values = [
+    ...counted.map((c) => c.listing.price),
+    ...(asking === null ? [] : [asking]),
+  ];
   const lo0 = Math.min(...values);
   const hi0 = Math.max(...values);
   const pad = (hi0 - lo0) * 0.08 || hi0 * 0.1;
@@ -426,28 +512,36 @@ function Strip({
   const height = Math.max(rows.length, 1) * ROW + 16;
 
   const xMedian = x(median);
-  const xAsking = x(appraisal.asking);
+  const xAsking = asking === null ? null : x(asking);
   const ticks = niceTicks(lo, hi);
   const hovered = active === null ? null : placed[active];
   const hasLinks = counted.some((c) => c.href !== null);
 
   return (
-    <section className="flex flex-col gap-3 border-b border-rule px-5 py-5 sm:px-6" aria-label="Where your price sits among the listings">
+    <section
+      className="flex flex-col gap-3 border-b border-rule px-5 py-5 sm:px-6"
+      aria-label={asking === null ? "Where the listings sit" : "Where your price sits among the listings"}
+    >
       {/* Direct labels for the two markers that matter, above the plot. */}
       <div className="relative h-5 text-xs font-medium">
         <span
           className="absolute whitespace-nowrap"
-          style={{ left: `${xMedian}%`, transform: `translateX(${ANCHOR_SHIFT[anchorFor(xMedian, xAsking, true)]})` }}
+          style={{
+            left: `${xMedian}%`,
+            transform: `translateX(${ANCHOR_SHIFT[xAsking === null ? anchorAlone(xMedian) : anchorFor(xMedian, xAsking, true)]})`,
+          }}
         >
           {market.method === "mean" ? "Average" : "Median"} {formatUsd(median)}
         </span>
-        <span
-          className="absolute whitespace-nowrap"
-          style={{ left: `${xAsking}%`, transform: `translateX(${ANCHOR_SHIFT[anchorFor(xAsking, xMedian, false)]})`, top: 0 }}
-        >
-          {/* Two labels may share a row; the anchor rule keeps them apart. */}
-          Yours {formatUsd(appraisal.asking)}
-        </span>
+        {xAsking !== null && asking !== null ? (
+          <span
+            className="absolute whitespace-nowrap"
+            style={{ left: `${xAsking}%`, transform: `translateX(${ANCHOR_SHIFT[anchorFor(xAsking, xMedian, false)]})`, top: 0 }}
+          >
+            {/* Two labels may share a row; the anchor rule keeps them apart. */}
+            Yours {formatUsd(asking)}
+          </span>
+        ) : null}
       </div>
 
       <div className="relative" style={{ height }}>
@@ -461,7 +555,9 @@ function Strip({
         ) : null}
 
         <span aria-hidden className="absolute top-0 bottom-0 w-0.5 -translate-x-1/2 bg-ink" style={{ left: `${xMedian}%` }} />
-        <span aria-hidden className="absolute top-0 bottom-0 w-0.5 -translate-x-1/2 bg-accent" style={{ left: `${xAsking}%` }} />
+        {xAsking !== null ? (
+          <span aria-hidden className="absolute top-0 bottom-0 w-0.5 -translate-x-1/2 bg-accent" style={{ left: `${xAsking}%` }} />
+        ) : null}
 
         {placed.map(({ cited, at, row }, index) => {
           const { listing, href, n } = cited;

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { SELLING_LENSES } from "@/lib/item";
 
 /**
- * What the study found, as the protocol states it (protocols/protocol_v2.md,
+ * What the study found, as the protocol states it (protocols/protocol_v3.md,
  * Novemsky & Kahneman 2005): owners put a price on an item of roughly this many
  * times what people who did not own it would pay. The figure is an illustration
  * of a $100 item, not a measurement, and says so.

@@ -89,8 +89,10 @@ describe("the new price in a reading", () => {
 });
 
 describe("the marker rule", () => {
-  it("lets the commit marker come at the first reply, when they have already said everything", () => {
-    expect(MARKER_RULE).toMatch(/commit marker may end your very first reply/);
+  it("lets the appraise marker come at the first reply, when they have already said everything", () => {
+    expect(MARKER_RULE).toMatch(/appraise marker may end your very first reply/);
+    expect(MARKER_RULE).toMatch(/\[\[STAGE:appraise\]\]/);
+    expect(MARKER_RULE).not.toMatch(/STAGE:commit/);
     expect(MARKER_RULE).not.toMatch(/never in the same turn that a phase began/);
   });
 
@@ -100,21 +102,14 @@ describe("the marker rule", () => {
   });
 });
 
-describe("a locked price in the system instruction", () => {
+describe("the price in the system instruction", () => {
   const context = { intake: { item: "iPhone 13" }, photoCount: 1 };
 
-  it("is stated when it is locked, without a number, and points at the lookup button", () => {
-    const text = systemInstruction("probe", { ...context, priceLocked: true });
-    expect(text).toMatch(/already locked in/);
-    expect(text).toMatch(/You are not told what it is/);
-    expect(text).toMatch(/Do not ask for a price/);
-    expect(text).toMatch(/Look up the market/);
-    expect(text).not.toMatch(/\$\d/);
-  });
-
-  it("is absent otherwise, so the questions are exactly what they were", () => {
-    expect(systemInstruction("probe", context)).not.toMatch(/already locked in/);
-    expect(systemInstruction("probe", { ...context, priceLocked: false })).not.toMatch(/locked in/);
+  it("is never mentioned in the questions: there is nothing to say about it yet", () => {
+    const text = systemInstruction("probe", context);
+    expect(text).not.toMatch(/already locked in/);
+    expect(text).not.toMatch(/Their locked price/);
+    expect(text).not.toMatch(/Look up the market/);
   });
 });
 

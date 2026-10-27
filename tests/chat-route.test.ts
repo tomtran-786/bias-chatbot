@@ -116,7 +116,7 @@ beforeEach(() => {
 
 describe("streaming", () => {
   it("streams a reply and keeps markers out of the text", async () => {
-    modelSays("What did you", " pay for it?", "[[STAGE:commit]]");
+    modelSays("What did you", " pay for it?", "[[STAGE:appraise]]");
 
     const { events } = await postChat({
       ...base,
@@ -167,24 +167,38 @@ describe("streaming", () => {
   });
 });
 
-describe("a locked price", () => {
-  it("is told to the assistant as a fact, never as a number", async () => {
-    await postChat({ ...base, priceLocked: true, transcript: conversation(FACT_COUNT) });
+describe("the price and the market", () => {
+  it("are kept out of the questions, even if the request carries them", async () => {
+    await postChat({
+      ...base,
+      askingPrice: asking,
+      appraisal,
+      transcript: conversation(FACT_COUNT),
+    });
     const [, , , context] = streamReply.mock.calls[0];
-    expect(context.priceLocked).toBe(true);
-    expect(JSON.stringify(context)).not.toMatch(/450/);
+    expect(context.askingPrice).toBeUndefined();
+    expect(context.appraisal).toBeUndefined();
+    expect(context.item).toBeUndefined();
   });
 
-  it("is not claimed when the person has not locked one", async () => {
-    await postChat(base);
+  it("reach the verdict, and only the verdict", async () => {
+    await postChat({
+      ...base,
+      phase: "verdict",
+      askingPrice: asking,
+      appraisal,
+      transcript: conversation(FACT_COUNT),
+      message: "what do you suggest?",
+    });
     const [, , , context] = streamReply.mock.calls[0];
-    expect(context.priceLocked).toBeUndefined();
+    expect(context.askingPrice).toEqual(asking);
+    expect(context.appraisal).toBeDefined();
   });
 });
 
-describe("the commit marker", () => {
+describe("the appraise marker", () => {
   it("is honoured at the very first reply: the assistant decides when it has the facts", async () => {
-    modelSays("You have told me everything I need.[[STAGE:commit]]");
+    modelSays("You have told me everything I need.[[STAGE:appraise]]");
 
     const { events } = await postChat({
       ...base,
@@ -193,21 +207,21 @@ describe("the commit marker", () => {
       message: "I'm selling: iPhone 13 128GB, bought for $800 in March 2023, used two years, light scratches",
       messagePhotoIds: ["p1"],
     });
-    expect(events).toContainEqual({ t: "stage", v: "commit" });
+    expect(events).toContainEqual({ t: "stage", v: "appraise" });
     expect(texts(events)).toBe("You have told me everything I need.");
   });
 
   it("goes through after the usual number of questions too", async () => {
-    modelSays("That is all I need.[[STAGE:commit]]");
+    modelSays("That is all I need.[[STAGE:appraise]]");
 
     // Three so far; this reply is the fourth.
     const ok = await postChat({ ...base, transcript: conversation(FACT_COUNT - 1) });
-    expect(ok.events).toContainEqual({ t: "stage", v: "commit" });
+    expect(ok.events).toContainEqual({ t: "stage", v: "appraise" });
   });
 
   it("is dropped when no photo has been shown", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
-    modelSays("All set.[[STAGE:commit]]");
+    modelSays("All set.[[STAGE:appraise]]");
 
     const { events } = await postChat({
       ...base,
@@ -221,7 +235,7 @@ describe("the commit marker", () => {
   });
 
   it("is never honoured in the verdict, and only the verdict may complete", async () => {
-    modelSays("Here.[[STAGE:commit]][[STAGE:complete]]");
+    modelSays("Here.[[STAGE:appraise]][[STAGE:complete]]");
     const verdict = await postChat({
       ...base,
       phase: "verdict",
@@ -241,7 +255,7 @@ describe("the commit marker", () => {
 });
 
 describe("a verdict-shaped reply outside the verdict", () => {
-  // Seen on a real deployment: the commit marker never came, so the screen kept
+  // Seen on a real deployment: the stage marker never came, so the screen kept
   // the chat box, the person typed "maybe 50" into it, and the model answered
   // with a full verdict, "recently sold listings on eBay" included, with no
   // search behind it.
@@ -253,7 +267,7 @@ describe("a verdict-shaped reply outside the verdict", () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
   });
 
-  it("is never shown: the app's own line replaces it and hands over to the price box", async () => {
+  it("is never shown: the app's own line replaces it and hands over to the market lookup", async () => {
     modelSays(FAKE_VERDICT);
 
     const { events } = await postChat({
@@ -263,8 +277,8 @@ describe("a verdict-shaped reply outside the verdict", () => {
 
     const shown = texts(events);
     expect(shown).not.toMatch(/Suggested price|\$10|well above/);
-    expect(shown).toMatch(/Enter your price in the box/);
-    expect(events).toContainEqual({ t: "stage", v: "commit" });
+    expect(shown).toMatch(/I'll look up the market now/);
+    expect(events).toContainEqual({ t: "stage", v: "appraise" });
   });
 
   it("is caught however the model's chunks fall", async () => {
@@ -274,22 +288,8 @@ describe("a verdict-shaped reply outside the verdict", () => {
       ...typedPrice,
       transcript: conversation(FACT_COUNT),
     });
-    expect(texts(events)).toMatch(/Enter your price in the box/);
+    expect(texts(events)).toMatch(/I'll look up the market now/);
     expect(texts(events)).not.toMatch(/\$10/);
-  });
-
-  it("sends the person to the lookup button, not the price box, when the price is already locked", async () => {
-    modelSays(FAKE_VERDICT);
-
-    const { events } = await postChat({
-      ...typedPrice,
-      transcript: conversation(FACT_COUNT),
-      priceLocked: true,
-    });
-
-    expect(texts(events)).toMatch(/locked in — press Look up the market/);
-    expect(texts(events)).not.toMatch(/Enter your price in the box/);
-    expect(events.some((e) => e.t === "stage")).toBe(false);
   });
 
   it("sends the person back to the questions when they have not all been asked", async () => {
@@ -316,7 +316,7 @@ describe("a verdict-shaped reply outside the verdict", () => {
   });
 
   it("is never shown when the model reads its own instructions back instead", async () => {
-    modelSays("Protocol version: v2\n\n## What you are\n\nYou are a pricing assistant...");
+    modelSays("Protocol version: v3\n\n## What you are\n\nYou are a pricing assistant...");
 
     // Early on there is nothing to hand over to: the person is only told to resend.
     const early = await postChat({ ...typedPrice, transcript: conversation(1) });
@@ -324,11 +324,11 @@ describe("a verdict-shaped reply outside the verdict", () => {
     expect(texts(early.events)).not.toMatch(/Protocol version|pricing assistant/);
     expect(early.events.some((e) => e.t === "stage")).toBe(false);
 
-    // Once the questions are done they are sent to the price box, as for a fake verdict.
+    // Once the questions are done they are sent to the market lookup, as for a fake verdict.
     const ready = await postChat({ ...typedPrice, transcript: conversation(FACT_COUNT) });
-    expect(texts(ready.events)).toMatch(/Enter your price in the box/);
+    expect(texts(ready.events)).toMatch(/I'll look up the market now/);
     expect(texts(ready.events)).not.toMatch(/Protocol version|pricing assistant/);
-    expect(ready.events).toContainEqual({ t: "stage", v: "commit" });
+    expect(ready.events).toContainEqual({ t: "stage", v: "appraise" });
   });
 
   it("does not touch a real verdict", async () => {
@@ -557,14 +557,14 @@ describe("the backup model", () => {
   it("answers in Gemini's place, tells the browser first, and keeps markers out of the text", async () => {
     process.env.DEEPSEEK_API_KEY = "sk-test";
     geminiOutOfQuota();
-    const fetchStub = vi.fn(async () => sseBody("Got it. ", "That is all I need.[[STAGE:commit]]"));
+    const fetchStub = vi.fn(async () => sseBody("Got it. ", "That is all I need.[[STAGE:appraise]]"));
     vi.stubGlobal("fetch", fetchStub);
 
     const { events } = await postChat({ ...base, transcript: conversation(FACT_COUNT - 1) });
 
     expect(events[0]).toEqual({ t: "notice", v: "backup_model", provider: "DeepSeek" });
     expect(texts(events)).toBe("Got it. That is all I need.");
-    expect(events).toContainEqual({ t: "stage", v: "commit" });
+    expect(events).toContainEqual({ t: "stage", v: "appraise" });
     expect(events.some((e) => e.t === "error")).toBe(false);
   });
 

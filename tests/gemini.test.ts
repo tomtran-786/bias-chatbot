@@ -82,7 +82,7 @@ describe("the system instruction", () => {
     const { config } = await run("probe", { intake, photoCount: 2 });
     expect(config.systemInstruction).toContain("Current phase: probe");
     expect(config.systemInstruction).toContain("Do not state any price");
-    expect(config.systemInstruction).not.toContain("locked in before seeing the market");
+    expect(config.systemInstruction).not.toContain("The price they locked in");
     expect(config.systemInstruction).not.toContain("The market, as the app computed it");
   });
 
@@ -124,7 +124,7 @@ describe("the system instruction", () => {
     expect(config.systemInstruction).toContain("Market median: $300");
     expect(config.systemInstruction).toContain("overpriced: true");
     expect(config.systemInstruction).toContain("They paid $849");
-    expect(config.systemInstruction).toContain("Protocol version: v2");
+    expect(config.systemInstruction).toContain("Protocol version: v3");
   });
 });
 

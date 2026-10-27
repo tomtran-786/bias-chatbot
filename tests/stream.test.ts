@@ -20,7 +20,7 @@ function run(text: string, chunkSize: number) {
 }
 
 describe("MarkerFilter", () => {
-  const reply = "Thanks for sharing that.\n[[STAGE:commit]]";
+  const reply = "Thanks for sharing that.\n[[STAGE:appraise]]";
 
   // Chunk size 1 is the worst case: every character of the marker arrives
   // separately, so any off-by-one in the hold-back leaks it to the participant.
@@ -29,7 +29,7 @@ describe("MarkerFilter", () => {
       const { visible, stored, stages } = run(reply, size);
       expect(visible).toBe("Thanks for sharing that.\n");
       expect(stored).toBe("Thanks for sharing that.");
-      expect(stages).toEqual(["commit"]);
+      expect(stages).toEqual(["appraise"]);
     });
   }
 

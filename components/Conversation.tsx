@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { BotAvatar } from "@/components/BotAvatar";
 import { IntakeForm } from "@/components/IntakeForm";
-import { MarketCard } from "@/components/MarketCard";
+import { ComparisonCard, MarketCard } from "@/components/MarketCard";
 import { PhotoPicker, Thumb } from "@/components/PhotoPicker";
 import { PriceGate } from "@/components/PriceGate";
 import { Prose } from "@/components/Prose";
@@ -20,13 +20,17 @@ import {
 import { citeListings, conversionNote, originalPrice, safeHref } from "@/lib/citations";
 import {
   MarketError,
-  isAbort,
   runMarket,
   type MarketCache,
-  type MarketResult,
   type MarketStep,
 } from "@/lib/market-client";
-import { computeAppraisal, formatUsd, type AppraiseResponse } from "@/lib/pricing";
+import {
+  computeAppraisal,
+  computeMarketView,
+  formatUsd,
+  type AppraiseResponse,
+  type MarketResponse,
+} from "@/lib/pricing";
 import {
   STAGES,
   STAGE_LABELS,
@@ -110,12 +114,12 @@ const RAIL = STAGES.filter((stage) => stage !== "complete");
 const toTranscript = (messages: StreamMessage[]): TranscriptMessage[] =>
   messages.map(({ role, text, at, photoIds }) => ({ role, text, at, photoIds }));
 
-/** A lookup that started while the person was still deciding on a price. */
-type Prefetch = {
-  /** How many messages the conversation had when it started, which is what it read. */
-  turns: number;
-  controller: AbortController;
-  promise: Promise<MarketResult>;
+/** What the person is told while the market is being looked up, one line per step. */
+const LOOKUP_PROGRESS: Record<MarketStep | "done", string> = {
+  facts: "Reading your conversation…",
+  search: "Searching used listings…",
+  read: "Checking each price against its page…",
+  done: "Working out the figures…",
 };
 
 type SendOptions = {
@@ -129,14 +133,17 @@ type SendOptions = {
 /**
  * The whole conversation, as one stream.
  *
- * The intake form, the price lock and the market card are cards *inside* the
- * conversation rather than screens it hands off to, so the thread reads as one
- * continuous exchange and nothing the person already answered scrolls out of
- * existence.
+ * The intake form, the market card, the price lock and the comparison are cards
+ * *inside* the conversation rather than screens it hands off to, so the thread
+ * reads as one continuous exchange and nothing the person already answered scrolls
+ * out of existence.
  *
- * `appraisedAt` is the transcript index the market card belongs at — the lookup
- * is a separate call and leaves no turn of its own, so without it the card could
- * only be pinned to the end and would sit below the verdict it produced.
+ * The order is the questions, then the market (looked up the moment the questions
+ * are done), then the person's own price, then the verdict.
+ *
+ * `marketAt` is the transcript index the market card belongs at — the lookup is a
+ * separate call and leaves no turn of its own, so without it the card could only be
+ * pinned to the end and would sit below the verdict it informed.
  */
 export function Conversation() {
   const [phase, setPhase] = useState<Stage>("intake");
@@ -144,24 +151,24 @@ export function Conversation() {
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [intakePhotos, setIntakePhotos] = useState<Photo[]>([]);
   const [messages, setMessages] = useState<StreamMessage[]>([]);
+  const [market, setMarket] = useState<MarketResponse | null>(null);
+  const [marketAt, setMarketAt] = useState<number | null>(null);
   const [askingPrice, setAskingPrice] = useState<AskingPrice | null>(null);
   const [appraisal, setAppraisal] = useState<AppraiseResponse | null>(null);
-  const [appraisedAt, setAppraisedAt] = useState<number | null>(null);
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<Photo[]>([]);
   const [streaming, setStreaming] = useState(false);
-  const [appraising, setAppraising] = useState(false);
+  const [lookingUp, setLookingUp] = useState(false);
   const [marketStep, setMarketStep] = useState<MarketStep | "done" | null>(null);
   const [error, setError] = useState<ChatError | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const opened = useRef(new Set<Stage>());
-  // The market lookup runs ahead of the price (see `startMarket`). Nothing it finds
-  // is put in state that a screen reads until the price is locked.
-  const market = useRef<MarketCache>({});
-  const prefetch = useRef<Prefetch | null>(null);
-  const prefetchedFor = useRef<number | null>(null);
+  // What a lookup has already found, so that asking again after a failure or a
+  // return to the questions costs only the steps that were not done.
+  const marketCache = useRef<MarketCache>({});
+  const lookupRunning = useRef(false);
 
   // Follows the thread as it grows. Not on the intake form, which is read from the
   // top: the explainer is the first thing on it, and scrolling to the bottom on load
@@ -169,7 +176,7 @@ export function Conversation() {
   useEffect(() => {
     if (!intake) return;
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [intake, messages, phase, appraisal, streaming, appraising]);
+  }, [intake, messages, phase, market, appraisal, streaming, lookingUp]);
 
   // Intake and verdict both begin with the assistant, so their opening turn is
   // sent on the person's behalf instead of waiting for them to type.
@@ -241,9 +248,6 @@ export function Conversation() {
           // rejects an explicit null.
           askingPrice: forVerdict ? (askingPrice ?? undefined) : undefined,
           appraisal: forVerdict ? appraisal?.raw : undefined,
-          // Tells the questions not to ask for a price that is already locked in,
-          // without telling them what it is.
-          priceLocked: !forVerdict && askingPrice !== null ? true : undefined,
           transcript: toTranscript(messages),
           message: text,
           messagePhotoIds: photoIds.length ? photoIds : undefined,
@@ -317,19 +321,18 @@ export function Conversation() {
       if (phase === "intake") setPhase("probe");
       if (phase === "verdict") setPhase("complete");
       for (const stage of stages) {
-        // The server drops a commit marker that arrives with nothing to follow;
+        // The server drops an appraise marker that arrives with nothing to follow;
         // checking again here means a stale or tampered stream cannot skip the
         // questions either. The assistant decides when it has the facts, so this can
-        // come at the first reply. With a price already locked, the lookup button
-        // takes over.
-        if (stage === "commit" && phase !== "verdict" && !askingPrice) {
-          const gate = canEnter("commit", {
+        // come at the first reply.
+        if (stage === "appraise" && phase !== "verdict" && !market) {
+          const gate = canEnter("appraise", {
             assistantTurns: assistantTurns(toTranscript(history)) + 1,
             photoCount: photoCount(toTranscript(history)),
+            hasMarket: false,
             hasAskingPrice: false,
-            hasAppraisal: false,
           });
-          if (gate.ok) setPhase("commit");
+          if (gate.ok) setPhase("appraise");
         }
       }
     } catch {
@@ -341,86 +344,32 @@ export function Conversation() {
   }
 
   /**
-   * Starts reading the conversation, searching and reading listings, so the market is
-   * ready when the price is. Starts over when the conversation has moved on; what
-   * the new reading shares with the old one (the search, if the item is the same) is
-   * kept in `market`, so a second start costs a model call and not the whole lookup.
+   * Looks up the market for the item the conversation describes: reads it, searches,
+   * reads each listing. Nothing here sees a price, and there is none yet to see.
    */
-  function startMarket() {
-    if (!intake) return;
-    const transcript = toTranscript(messages);
-    prefetch.current?.controller.abort();
-
-    const controller = new AbortController();
-    const promise = runMarket({ intake, photos, transcript }, market.current, {
-      signal: controller.signal,
-      onStep: setMarketStep,
-    });
-    const started: Prefetch = { turns: transcript.length, controller, promise };
-    prefetch.current = started;
-
-    promise.catch((thrown) => {
-      if (isAbort(thrown) || prefetch.current !== started) return;
-      if (thrown instanceof MarketError && thrown.code === "needs_identity") {
-        backToQuestions(null);
-        return;
-      }
-      // Not shown: the person has not asked for the market yet. Locking the price
-      // runs whatever is missing, and that is the attempt that reports an error.
-      console.warn("market lookup ahead of the price failed:", thrown);
-    });
-  }
-
-  /** The conversation never pinned the item down: back to the questions, price (if any) kept. */
-  function backToQuestions(locked: AskingPrice | null) {
-    if (locked) setAskingPrice(locked);
-    setPhase("probe");
-    setMarketStep(null);
-    setFailure(
-      locked
-        ? "The assistant couldn’t tell which model this is. Add the model name, a label or a screenshot of the settings, then look up the market again. Your price stays locked in."
-        : "The assistant couldn’t tell which model this is. Add the model name, a label or a screenshot of the settings, and answer its next question.",
-    );
-  }
-
-  async function requestAppraisal(asking: AskingPrice) {
-    if (!intake) return;
-    setAppraising(true);
+  async function lookUpMarket() {
+    if (!intake || lookupRunning.current) return;
+    lookupRunning.current = true;
+    setLookingUp(true);
     setFailure(null);
-    const transcript = toTranscript(messages);
     try {
-      // Joins the lookup that is already running when it read this conversation;
-      // otherwise runs what is missing. Either way the figures are worked out here,
-      // from the listings, now that there is a price to set them against.
-      const ahead = prefetch.current;
-      const joined =
-        ahead && ahead.turns === transcript.length
-          ? await ahead.promise.catch(() => null)
-          : null;
-      if (!joined) ahead?.controller.abort();
-      const result =
-        joined ??
-        (await runMarket({ intake, photos, transcript }, market.current, {
-          onStep: setMarketStep,
-        }));
-
-      const response: AppraiseResponse = {
-        ...computeAppraisal(result.raw, asking.usd),
+      const result = await runMarket(
+        { intake, photos, transcript: toTranscript(messages) },
+        marketCache.current,
+        { onStep: setMarketStep },
+      );
+      setMarket({
+        ...computeMarketView(result.raw),
         item: result.item,
         raw: result.raw,
         queries: result.queries,
         backup: result.backup,
-      };
-      setAskingPrice(asking);
-      setAppraisal(response);
-      setAppraisedAt(messages.length);
-      setPhase("appraise");
+      });
+      setMarketAt(messages.length);
     } catch (thrown) {
       const code = thrown instanceof MarketError ? thrown.code : undefined;
       if (code === "needs_identity") {
-        // The price stays locked: nothing about the market has been seen, so
-        // the baseline is intact. The questions pick up where they left off.
-        backToQuestions(asking);
+        backToQuestions();
       } else {
         // The server's reason is for whoever is running this, not for the
         // person using it: it goes to the console and the screen gets plain copy.
@@ -430,9 +379,31 @@ export function Conversation() {
         setFailure((code && APPRAISE_ERROR_COPY[code]) || LOOKUP_FAILED);
       }
     } finally {
-      setAppraising(false);
+      lookupRunning.current = false;
+      setLookingUp(false);
       setMarketStep(null);
     }
+  }
+
+  /** The conversation never pinned the item down: back to the questions. */
+  function backToQuestions() {
+    setPhase("probe");
+    setFailure(
+      "The assistant couldn’t tell which model this is. Add the model name, a label or a screenshot of the settings, and answer its next question.",
+    );
+  }
+
+  /** Records their price and sets the market against it. The market itself is already in hand. */
+  function lockPrice(asking: AskingPrice) {
+    if (!market) return;
+    setAskingPrice(asking);
+    setAppraisal({
+      ...computeAppraisal(market.raw, asking.usd),
+      item: market.item,
+      raw: market.raw,
+      queries: market.queries,
+      backup: market.backup,
+    });
   }
 
   function submitDraft() {
@@ -447,32 +418,24 @@ export function Conversation() {
   const asked = assistantTurns(toTranscript(messages));
   const composing = phase === "intake" || phase === "probe";
   // The button for the person to say they are done, in case the assistant has not.
-  // The assistant saying it is done (the commit marker) needs no count at all.
-  const canPrice =
+  // The assistant saying it is done (the appraise marker) needs no count at all.
+  const canLookUp =
     phase === "probe" &&
-    !askingPrice &&
     askedEnough({
       assistantTurns: asked,
       photoCount: photoCount(toTranscript(messages)),
+      hasMarket: false,
       hasAskingPrice: false,
-      hasAppraisal: false,
     });
-  const wantsMarket =
-    intake !== null &&
-    !askingPrice &&
-    !streaming &&
-    (phase === "commit" || canPrice);
 
-  // Looks up the market as soon as the questions are done, and again when the
-  // person adds something to them after.
+  // Looks up the market as soon as the questions are done.
   useEffect(() => {
-    if (!wantsMarket || prefetchedFor.current === messages.length) return;
-    prefetchedFor.current = messages.length;
-    startMarket();
+    if (phase !== "appraise" || !intake || market || lookupRunning.current) return;
+    void lookUpMarket();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wantsMarket, messages.length]);
-  const before = appraisedAt === null ? messages : messages.slice(0, appraisedAt);
-  const after = appraisedAt === null ? [] : messages.slice(appraisedAt);
+  }, [phase, intake, market]);
+  const before = marketAt === null ? messages : messages.slice(0, marketAt);
+  const after = marketAt === null ? [] : messages.slice(marketAt);
   const photoById = new Map(photos.map((photo) => [photo.id, photo]));
 
   // The assistant opens intake and the verdict by itself; if that failed there
@@ -552,13 +515,29 @@ export function Conversation() {
             />
           ))}
 
-          {phase === "commit" ? (
-            <PriceGate
-              pending={appraising}
-              step={marketStep}
-              onSubmit={requestAppraisal}
+          {phase === "appraise" && !market ? (
+            lookingUp ? (
+              <LookupProgress step={marketStep} />
+            ) : failure ? (
+              <button
+                type="button"
+                onClick={() => void lookUpMarket()}
+                className="btn-ghost self-start px-5 py-2 text-sm font-medium"
+              >
+                Try again
+              </button>
+            ) : null
+          ) : null}
+
+          {market ? (
+            <MarketCard
+              market={market}
+              canContinue={phase === "appraise"}
+              onContinue={() => setPhase("commit")}
             />
           ) : null}
+
+          {phase === "commit" && !askingPrice ? <PriceGate onSubmit={lockPrice} /> : null}
 
           {appraisal && askingPrice ? (
             <>
@@ -572,9 +551,9 @@ export function Conversation() {
                 photoById={photoById}
                 startsRun
               />
-              <MarketCard
+              <ComparisonCard
                 appraisal={appraisal}
-                canContinue={phase === "appraise"}
+                canContinue={phase === "commit"}
                 pending={streaming}
                 onContinue={() => setPhase("verdict")}
               />
@@ -677,29 +656,18 @@ export function Conversation() {
             </div>
             <div className="mt-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
               <p className="text-xs text-ink-muted">
-                {askingPrice
-                  ? "Your price is still locked in. Answer, then look up the market again."
-                  : canPrice
-                    ? "Enough asked to price. Keep going if there is more to say."
-                    : "A few questions, then you set your price."}
+                {canLookUp
+                  ? "Enough asked to look up the market. Keep going if there is more to say."
+                  : "A few questions, then the market, then you set your price."}
               </p>
-              {askingPrice && phase === "probe" ? (
-                <button
-                  type="button"
-                  disabled={streaming || appraising}
-                  onClick={() => void requestAppraisal(askingPrice)}
-                  className="btn-ghost px-4 py-1.5 text-xs font-medium"
-                >
-                  {appraising ? "Looking up…" : "Look up the market"}
-                </button>
-              ) : canPrice ? (
+              {canLookUp ? (
                 <button
                   type="button"
                   disabled={streaming}
-                  onClick={() => setPhase("commit")}
+                  onClick={() => setPhase("appraise")}
                   className="btn-ghost px-4 py-1.5 text-xs font-medium"
                 >
-                  I’m ready to set my price
+                  I’m ready to see the market
                 </button>
               ) : null}
             </div>
@@ -782,6 +750,16 @@ function Turn({
         <Prose text={message.text} />
       </div>
     </div>
+  );
+}
+
+/** The market lookup, in words, while it runs. It can take a while, and says so. */
+function LookupProgress({ step }: { step: MarketStep | "done" | null }) {
+  return (
+    <p className={`${BOT_BUBBLE} rise`} role="status">
+      {step ? LOOKUP_PROGRESS[step] : "Getting the market ready…"} This can take up to a
+      minute.
+    </p>
   );
 }
 

@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import type { MarketStep } from "@/lib/market-client";
 import {
   ASKING_PRICE_PROMPT,
   MAX_ASKING_USD,
@@ -18,39 +17,17 @@ function parseAmount(text: string): number | null {
 }
 
 /**
- * The price they would list it at, recorded before the market is looked up.
+ * The price they would list it at, asked for once the market is on screen.
  *
- * This is the step the app has that a Gem does not. The anchor study measures
- * what owners would sell for, and that only means something if it is taken
- * before anything else has had a chance to move it — in a chat window the
- * assistant's market figures can be read before a number of one's own is formed.
+ * The market has already been looked up and shown by the time this appears, so
+ * the number is set with it in view. The lookup itself never saw a price, and
+ * still does not.
  *
- * The market is looked up while they decide (lib/market-client.ts), so it is
- * ready the moment they lock in, but nothing it finds is held anywhere a screen
- * reads until they have: the lookup never sees the price, and this card shows
- * nothing of it. Before they submit it can only be waiting; the progress line
- * below appears after, if the lookup has not finished.
- *
- * Submit-once, deliberately. Being able to revise the price after seeing the
- * market would make it worthless as a baseline.
+ * Submit-once, deliberately. The comparison and the verdict that follow are set
+ * against the number the person committed to; letting it be revised would make
+ * both a moving target.
  */
-const PROGRESS: Record<MarketStep | "done", string> = {
-  facts: "Reading your conversation…",
-  search: "Searching used listings…",
-  read: "Checking each price against its page…",
-  done: "Working out the figures…",
-};
-
-export function PriceGate({
-  pending,
-  step,
-  onSubmit,
-}: {
-  pending: boolean;
-  /** Which part of the market lookup is running, to say so while they wait. */
-  step: MarketStep | "done" | null;
-  onSubmit: (asking: AskingPrice) => void;
-}) {
+export function PriceGate({ onSubmit }: { onSubmit: (asking: AskingPrice) => void }) {
   const [text, setText] = useState("");
   const amount = parseAmount(text);
 
@@ -77,7 +54,7 @@ export function PriceGate({
         className="flex flex-col gap-4"
         onSubmit={(event) => {
           event.preventDefault();
-          if (amount !== null && !pending) onSubmit({ usd: amount });
+          if (amount !== null) onSubmit({ usd: amount });
         }}
       >
         <label className="flex flex-col gap-1.5">
@@ -90,10 +67,9 @@ export function PriceGate({
               autoComplete="off"
               value={text}
               onChange={(event) => setText(event.target.value)}
-              disabled={pending}
               placeholder="0"
               aria-describedby="price-hint"
-              className="w-full bg-transparent text-2xl font-semibold outline-none placeholder:text-ink-muted disabled:opacity-50"
+              className="w-full bg-transparent text-2xl font-semibold outline-none placeholder:text-ink-muted"
             />
             <span className="text-sm text-ink-muted">USD</span>
           </span>
@@ -101,22 +77,16 @@ export function PriceGate({
         <p id="price-hint" className="text-xs text-ink-muted">
           {text && amount === null
             ? "Enter a positive amount, for example 450 or 449.99."
-            : "Going by your gut is the point. Don’t look anything up yet."}
+            : "The amount you would put on the listing."}
         </p>
 
         <button
           type="submit"
-          disabled={amount === null || pending}
+          disabled={amount === null}
           className="btn-primary self-start px-6 py-3 text-sm font-medium"
         >
-          {pending ? "Looking up the market…" : "Lock it in and see the market"}
+          Lock in my price
         </button>
-        {pending ? (
-          <p className="text-xs text-ink-muted" role="status">
-            {step ? PROGRESS[step] : "Getting the market ready…"} This can take up
-            to a minute.
-          </p>
-        ) : null}
       </form>
     </section>
   );

@@ -2,15 +2,16 @@
 
 A pricing assistant for the moment *before* something is listed for sale. Someone
 brings a used item. The assistant asks about it from photos and a few short
-questions, has them **commit to the price they would list it at before they see
-anything about the market**, then finds used listings of the same model, works
-out the market price, and gives a suggested price, the reasons, and where to
-sell — set against the price they committed to.
+questions, finds used listings of the same model and works out the market price,
+shows them that, then has them **commit to the price they would list it at**, and
+gives a suggested price, the reasons, and where to sell — set against the price
+they committed to.
 
 It is built on **loss aversion** (Novemsky & Kahneman 2005): people who own an
 item value it at roughly 1.85 times what people who do not own it will pay, so a
-seller's first number is usually too high. The locked price is that
-measurement; the market median is the corrective.
+seller's first number is usually too high. The market median is the corrective,
+and the locked price is what it is set against. The price is set with the market
+in view, so it is not an uncoached baseline (see `protocols/protocol_v3.md`).
 
 The interface is English and the money is US dollars. Listings come from
 international marketplaces (eBay, Facebook Marketplace, Swappa, Mercari and
@@ -22,16 +23,18 @@ similar).
 |---|---|---|
 | **Intake** | a form | One to four photos and a line: "What are you selling?" |
 | **Questions** | the model | One question per turn covering four things: the exact model, what they paid and when, how long they have used it, and its condition checked against the photos. May ask for more photos. |
-| **Your price** | a locked form | "Before you see the market: what price would you list it at?" in USD. |
-| **The market** | the app + the model | Search, check each listing against its source, compute the median, range, per-platform split, suggested price and gap. Shown as a card. |
+| **The market** | the app + the model | Search, check each listing against its source, compute the median, range, per-platform split and suggested price. Shown as a card, before any price is asked for. |
+| **Your price** | a locked form | "Now it's your call: what price would you list it at?" in USD, once the market is on screen. Then a short card sets it against the market median. |
 | **Verdict** | the model | Four sections: Suggested price · Why this price · Where to sell · What would change this. The bias is named only when the app marks the price `overpriced`. |
 | **Finished** | — | |
 
-The price step is the load-bearing one. A corrective only does anything if the
-person has committed to a number first; if they can read the market before
-forming their own view, the comparison is worthless. Here the market is not
-looked up until the price is locked, and the model that reads the listings is
-never told that price — or what they paid.
+The market is looked up and shown first, and the price is asked for after. That is
+a change from the earlier design, which locked the price before the market was
+looked up so that it was an uncoached baseline (`protocols/protocol_v2.md`, still in
+the repo). Prices recorded now were set having seen the market and are not
+comparable with those. What has not changed: the model that reads the listings is
+never told what they paid, and there is no price for it to see, because the lookup
+happens before one exists.
 
 ## Setup
 
@@ -213,7 +216,7 @@ every request for it.
 gate -> facts -> queries -> Tavily (3, then maybe 1) -> sources -> read -> ground -> price
 ```
 
-**It runs in three requests, ahead of the price.** `app/api/market/route.ts` takes a
+**It runs in three requests, before the price is asked for.** `app/api/market/route.ts` takes a
 `step`: `facts` (the conversation and photos in, the item out), `search` (the item in,
 numbered sources out) and `read` (the item and sources in, grounded listings out). Each
 step has a whole 60-second function, can be tried again without redoing the ones before
@@ -222,20 +225,19 @@ the failure may pass (a server error, a timeout, a dropped connection), never af
 a spent budget, a rate limit or a refused key. The figures are then computed **in the
 browser** with `computeAppraisal` from the listings the last step returned.
 
-It starts as soon as the questions are done and the price box is open, while the person
-is still deciding on a price. No step is shown the price or needs it, and nothing it finds
-is held anywhere a screen reads until the price is locked, so the baseline is as uncoached
-as when the lookup waited for them. If they add something to the conversation, the facts
-are read again, and the search and the reading are reused when the item and the facts the
-reading saw have not changed.
+It starts as soon as the questions are done, and the market card is shown when it
+finishes; the price box comes after. No step is shown a price or needs one. If a lookup
+fails and the person tries again, or is sent back to the questions and adds something,
+the facts are read again, and the search and the reading are reused when the item and
+the facts the reading saw have not changed.
 
 1. **Gate.** Every step needs the assistant to have spoken and a photo to exist, and
    nothing else. How many facts it has is the assistant's call: it ends a reply with the
-   commit marker when it has all four, which can be after the first reply if the person
+   appraise marker when it has all four, which can be after the first reply if the person
    gave them in the description. `facts` is the net under that: if it cannot name the
    model, the app goes back to the questions (`needs_identity`) rather than search for a
-   guess. The "I'm ready to set my price" button, for an assistant that forgets the marker,
-   still appears after four replies.
+   guess. The "I'm ready to see the market" button, for an assistant that forgets the
+   marker, still appears after four replies.
 2. **Budget** (`lib/budget.ts`). A step reserves the calls it is about to make, all or
    nothing, counted by what actually runs: one model call for `facts`, three searches
    (and a fourth if it widens) for `search`, one model call for `read` (none when there
@@ -248,7 +250,7 @@ reading saw have not changed.
    million dollars, and so failed every retry.
 4. **Queries** (`searchQueries` in `lib/item.ts`). Built by code, not by the model, from
    facts that have had every dollar and đồng amount scrubbed, so they cannot contain what
-   the person paid or the price they locked in: `"<item> used sold price"` and
+   the person paid: `"<item> used sold price"` and
    `"<item> used for sale"` on the US sites, and `"<item> cũ"` on Chợ Tốt, Shopee and
    Lazada. When fewer than six sources carry a price, one widening query runs
    (`"<model> used price"`, any site), if the budget allows.
@@ -328,7 +330,7 @@ questions; the verdict argues from the facts already extracted.
 
 ## The protocol is the instrument
 
-`protocols/protocol_v2.md` holds the assistant. Everything it asks, withholds and
+`protocols/protocol_v3.md` holds the assistant. Everything it asks, withholds and
 recommends lives in a markdown document sent as the system instruction on every
 turn, so editing it edits the intervention. See `protocols/README.md`.
 
@@ -340,25 +342,25 @@ into the Gemini Gem builder. Four things the app does that a Gem cannot:
 
 1. **The search cannot see their price.** The queries are built by code from facts
    with every dollar amount scrubbed out, and the model that reads the results is
-   given the item and never the numbers. A Gem searches inside the same conversation
-   where both are on the page.
+   given the item and never what they paid. A Gem searches inside the same conversation
+   where it is on the page.
 2. **Sources are verified, not trusted.** A listing is counted only if its price
    appears word for word in the text of the page it cites, and the link shown is the
    address the search returned, never a URL the model wrote. A Gem will cite whatever
    URL it likes and report whatever price it likes.
 3. **The market price is computed.** The model reports listings and a position;
    the app does the arithmetic.
-4. **Phase order is enforced.** No price box before the assistant has said it has what
-   it needs (and a photo), no market shown before the price is locked, no verdict before
-   there is a market.
+4. **Phase order is enforced.** No market lookup before the assistant has said it has what
+   it needs (and a photo), no price box before the market is on screen, no verdict before
+   there is a market and a locked price.
 
 The phase gate used to count: four assistant replies before the price box. It no longer
 does. The assistant decides when it has the four facts and ends that reply with the
-commit marker, which may be the very first reply if the person gave them in their
+appraise marker, which may be the very first reply if the person gave them in their
 description; a lookup that cannot name the model sends them back to the questions. The
-count survives only as when the "I'm ready to set my price" button appears, for a model
-that forgets the marker. `protocols/protocol_v2.md` is in use and was not edited, so its
-sentence about "four questions and a photo" describes the earlier gate; the phase
+count survives only as when the "I'm ready to see the market" button appears, for a model
+that forgets the marker. `protocols/protocol_v2.md` was left as it was when the market
+moved ahead of the price; the new order is `protocols/protocol_v3.md`, and the phase
 instructions the app appends (`lib/stages.ts`, `lib/prompts.ts`) are what the model follows.
 
 ### What "enforced" means
@@ -371,13 +373,13 @@ being precise about rather than overclaiming.
 
 One drift is also caught on the way out. The protocol the model holds contains the
 verdict format, so a price typed into the chat while the phase is still the
-questions (the price box only appears once the model emits the commit marker, and
+questions (the market lookup only starts once the model emits the appraise marker, and
 the weaker fallback models sometimes do not) was answered with a full verdict that
 no market stood behind. Outside the verdict phase, `app/api/chat/route.ts` holds the
 first few words of each reply, and one that opens like a verdict (`opensLikeVerdict`)
 or begins with the system prompt (`opensLikePrompt`, which the weaker models also
 did when handed a price in the chat) is replaced by a line the app writes; once the
-questions are done that line sends the person to the price box. It only catches a
+questions are done that line sends the person to the market lookup. It only catches a
 reply that *starts* that way, and it is a net under the stage instruction rather
 than a substitute for it.
 
@@ -386,7 +388,7 @@ than a substitute for it.
 | Variable | Default | Purpose |
 |---|---|---|
 | `GEMINI_MODEL` | `gemini-3.6-flash` | Pinned deliberately — see below |
-| `PROTOCOL_FILE` | `protocol_v2.md` | Which protocol to load |
+| `PROTOCOL_FILE` | `protocol_v3.md` | Which protocol to load |
 | `MAX_TURNS` | `20` | Per-conversation cap, guards the quota |
 | `TAVILY_API_KEY` | — | Required to look up the market; read only when an appraisal runs |
 | `GEMINI_FALLBACK_MODELS` | `gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite` | Gemini models tried, in order, after `GEMINI_MODEL`; empty means none |

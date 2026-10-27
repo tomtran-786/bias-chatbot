@@ -382,13 +382,14 @@ export type Suggested = {
   capped: boolean;
 };
 
-export type Appraisal = {
-  asking: number;
+/**
+ * The market as it is shown before the person has named a price: everything an
+ * appraisal holds that does not depend on their number.
+ */
+export type MarketView = {
   market: Market;
   platforms: PlatformSummary[];
   suggested: Suggested | null;
-  gap: { amount: number; pct: number } | null;
-  overpriced: boolean;
   newPrice: number | null;
   /** Where the new price was read from. Null whenever `newPrice` is. */
   newPriceUrl: string | null;
@@ -398,14 +399,33 @@ export type Appraisal = {
   listings: PricedListing[];
 };
 
+/** A market view set against the price they named. */
+export type Appraisal = MarketView & {
+  asking: number;
+  gap: { amount: number; pct: number } | null;
+  overpriced: boolean;
+};
+
 const ANCHOR_FOR: Record<Position, Suggested["anchor"]> = {
   below: "p25",
   typical: "median",
   above: "p75",
 };
 
+/** What `computeMarketView` needs: the listings, and what the depreciation estimate needs. */
+type MarketInput = Pick<
+  AppraisalInput,
+  "listings" | "newPrice" | "position" | "positionEvidence"
+> & {
+  /** What the depreciation estimate needs, for when there are no listings. */
+  item?: Pick<ItemFacts, "purchasePrice" | "ageMonths" | "category">;
+  newPriceUrl?: string | null;
+  vndPerUsd?: number;
+};
+
 /**
- * The market, the suggested price and the gap, from raw grounded listings.
+ * The market and the suggested price, from raw grounded listings. Independent of
+ * any price the person names, so it can be shown before they name one.
  *
  * The thresholds are the whole policy: five or more listings earns a median, a
  * range and a condition adjustment; three or four earns a median and a flag; one
@@ -413,15 +433,7 @@ const ANCHOR_FOR: Record<Position, Suggested["anchor"]> = {
  * in a straight line (`straightLineValue`). Only when even that cannot be worked
  * out is there no price.
  */
-export function computeAppraisal(
-  input: Pick<AppraisalInput, "listings" | "newPrice" | "position" | "positionEvidence"> & {
-    /** What the depreciation estimate needs, for when there are no listings. */
-    item?: Pick<ItemFacts, "purchasePrice" | "ageMonths" | "category">;
-    newPriceUrl?: string | null;
-    vndPerUsd?: number;
-  },
-  asking: number,
-): Appraisal {
+export function computeMarketView(input: MarketInput): MarketView {
   const newPrice = input.newPrice ?? null;
   const screened = screen(input.listings, newPrice, input.vndPerUsd ?? DEFAULT_VND_PER_USD);
 
@@ -517,15 +529,10 @@ export function computeAppraisal(
     suggested = { price, anchor, capped: price < listingPrice(target) };
   }
 
-  const gapToMarket = marketMedian === null ? null : gap(asking, marketMedian);
-
   return {
-    asking,
     market,
     platforms: byPlatform(used),
     suggested,
-    gap: gapToMarket,
-    overpriced: gapToMarket !== null && gapToMarket.pct >= OVERPRICED_AT,
     newPrice,
     newPriceUrl: newPrice === null ? null : (input.newPriceUrl ?? null),
     position: input.position,
@@ -534,8 +541,21 @@ export function computeAppraisal(
   };
 }
 
-/** The market card's data: the figures, plus what they came from. Built in the browser from the market steps. */
-export type AppraiseResponse = Appraisal & {
+/** The market view, set against the price they named: the gap, and whether it runs high. */
+export function computeAppraisal(input: MarketInput, asking: number): Appraisal {
+  const view = computeMarketView(input);
+  const gapToMarket =
+    view.market.median === null ? null : gap(asking, view.market.median);
+  return {
+    ...view,
+    asking,
+    gap: gapToMarket,
+    overpriced: gapToMarket !== null && gapToMarket.pct >= OVERPRICED_AT,
+  };
+}
+
+/** What the figures came from, besides the listings themselves. */
+type MarketProvenance = {
   item: ItemFacts;
   /**
    * The grounded listings before screening, and the rest of what the figures
@@ -551,6 +571,12 @@ export type AppraiseResponse = Appraisal & {
    */
   backup: Array<{ step: "facts" | "reading"; provider: string }>;
 };
+
+/** The market card's data before a price is named: the figures, plus what they came from. */
+export type MarketResponse = MarketView & MarketProvenance;
+
+/** The same set against the price they named. Built in the browser from the market steps. */
+export type AppraiseResponse = Appraisal & MarketProvenance;
 
 const dollars = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -610,6 +636,25 @@ export function marketHeadline({
   }
   const size = formatPct(gapToMarket.pct).replace(/^[+−]/, "");
   return `Your ${formatUsd(asking)} is ${size} ${gapToMarket.pct > 0 ? "above" : "below"} the ${name}`;
+}
+
+/**
+ * The same takeaway before the person has named a price: what the market says, with
+ * nothing to set it against yet.
+ */
+export function marketOnlyHeadline({
+  item,
+  market,
+}: {
+  item: Pick<ItemFacts, "model">;
+  market: Pick<Market, "method" | "median">;
+}): string {
+  const what = item.model || "item";
+  if (market.method === null || market.median === null) {
+    return `Too few verified listings to price your ${what}`;
+  }
+  const name = PRICE_NAME[market.method];
+  return `${name.charAt(0).toUpperCase()}${name.slice(1)} for your ${what}: ${formatUsd(market.median)}`;
 }
 
 /**

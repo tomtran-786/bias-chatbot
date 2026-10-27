@@ -97,7 +97,7 @@ export const env = {
   },
   /** Which protocol document to load. Bump this, don't edit a live protocol. */
   get protocolFile() {
-    return process.env.PROTOCOL_FILE ?? "protocol_v2.md";
+    return process.env.PROTOCOL_FILE ?? "protocol_v3.md";
   },
   /**
    * Hard cap on turns per appraisal. Guards the quota against one runaway

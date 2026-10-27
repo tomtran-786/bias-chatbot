@@ -5,19 +5,19 @@
  *
  *   facts -> search -> read -> figures (computed here, lib/pricing.ts)
  *
- * It starts while the person is still deciding on a price. None of the steps is
- * shown that price or needs it, and nothing it finds is put on screen until the
- * price is locked, so the baseline they are about to give is as uncoached as it was
- * when the lookup waited for them. All that changes is how long they wait after.
+ * It runs when the questions are done, before the person is asked for a price, and
+ * its result is shown to them first. None of the steps is shown a price or needs
+ * one: there is none yet, and what they paid is stripped before anything is searched
+ * or read.
  *
  * Each step is retried once if it failed in a way that may pass (a server error, a
  * timeout, a network drop). Never one that quota, a budget, a rate limit or a bad
  * key caused: asking again would only be refused again, and burn a call doing it.
  *
- * `MarketCache` is what makes a rerun cheap. When the person says something more
- * after the lookup has started, the facts are read again, but the search is reused if
- * the item it describes has not changed, and so is the reading if the facts it saw
- * have not.
+ * `MarketCache` is what makes a rerun cheap. When a lookup fails and is tried again, or
+ * the person is sent back to the questions and says something more, the facts are read
+ * again, but the search is reused if the item it describes has not changed, and so is
+ * the reading if the facts it saw have not.
  */
 import { forSearch, searchName, type Intake, type ItemFacts, type Photo } from "./item";
 import type { AppraisalInput } from "./pricing";
