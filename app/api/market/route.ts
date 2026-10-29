@@ -49,7 +49,12 @@ import {
   searchQueries,
   wideningQuery,
 } from "@/lib/item";
-import { groundNewPrice, type AppraisalInput } from "@/lib/pricing";
+import {
+  MAX_RAW_LISTINGS,
+  appraisalInputSchema,
+  groundNewPrice,
+  type AppraisalInput,
+} from "@/lib/pricing";
 import {
   SearchFailedError,
   SearchQuotaError,
@@ -60,6 +65,8 @@ import {
 } from "@/lib/search";
 import {
   MAX_SOURCES,
+  MAX_SOURCE_TITLE,
+  MAX_URL,
   groundListings,
   hasPrice,
   limitSources,
@@ -77,8 +84,8 @@ import {
 export const maxDuration = 60;
 
 const sourceSchema = z.object({
-  url: z.string().min(1).max(2000),
-  title: z.string().max(400),
+  url: z.string().min(1).max(MAX_URL),
+  title: z.string().max(MAX_SOURCE_TITLE),
   text: z.string().max(4000),
 });
 
@@ -274,14 +281,23 @@ export async function POST(request: Request) {
 
         const raw: AppraisalInput = {
           item,
-          listings: groundListings(reading.listings, sources),
+          listings: groundListings(reading.listings, sources).slice(0, MAX_RAW_LISTINGS),
           newPrice: newPrice?.price ?? null,
           newPriceUrl: newPrice?.url ?? null,
           position: reading.position,
           positionEvidence: reading.positionEvidence,
           vndPerUsd: env.vndPerUsd,
         };
-        return done(NextResponse.json({ raw, backup }));
+        // The browser posts this back with the verdict request, which checks it against
+        // the same schema. Checked here too, so a reading the verdict would refuse fails
+        // now, with its reason in the log, instead of after the person has set a price.
+        const checked = appraisalInputSchema.safeParse(raw);
+        if (!checked.success) {
+          throw new MalformedAppraisalError(
+            `The market does not fit what the verdict accepts: ${checked.error.message}`,
+          );
+        }
+        return done(NextResponse.json({ raw: checked.data, backup }));
       }
     }
   } catch (thrown) {

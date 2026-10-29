@@ -127,6 +127,29 @@ describe("streaming", () => {
     expect(texts(events)).not.toContain("[[STAGE:");
   });
 
+  it("ends a finished reply with done, so the browser can tell it from one cut off", async () => {
+    const { events } = await postChat(base);
+    expect(events.at(-1)).toEqual({ t: "done" });
+    expect(events.filter((e) => e.t === "done")).toHaveLength(1);
+  });
+
+  it("ends a replaced reply with done too", async () => {
+    modelSays("## Suggested price\nList it at $300.");
+    const { events } = await postChat(base);
+    expect(events.at(-1)).toEqual({ t: "done" });
+  });
+
+  it("never sends done after a failure", async () => {
+    streamReply.mockImplementation(async function* () {
+      yield "Half a";
+      throw new Error("boom");
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { events } = await postChat(base);
+    expect(events.at(-1)).toEqual({ t: "error", code: "server_error" });
+    expect(events.some((e) => e.t === "done")).toBe(false);
+  });
+
   it("opens the conversation from the intake phase with no transcript", async () => {
     modelSays("A blue iPhone 13 — how long have you had it?");
 
@@ -507,6 +530,34 @@ describe("errors", () => {
     expect(status).toBe(429);
     expect(json.error).toBe("turn_limit");
     expect(streamReply).not.toHaveBeenCalled();
+  });
+
+  it("still lets a long conversation reach its verdict", async () => {
+    // Market lookups have no turn limit, so someone who answered at length gets a
+    // market and a price; refusing the verdict then would leave them stuck.
+    const long = Array.from({ length: env.maxTurns }, (_, i) => [
+      { role: "user" as const, text: `a${i}`, at, photoIds: i === 0 ? ["p1"] : undefined },
+      { role: "model" as const, text: `q${i}`, at },
+    ]).flat();
+    const { status } = await postChat({
+      ...base,
+      phase: "verdict",
+      askingPrice: asking,
+      appraisal,
+      transcript: long,
+      message: "I've seen the market. What do you suggest?",
+    });
+    expect(status).toBe(200);
+    expect(streamReply).toHaveBeenCalled();
+  });
+
+  it("keeps its default when MAX_TURNS is not a number, rather than lifting the limit", () => {
+    process.env.MAX_TURNS = "twenty";
+    try {
+      expect(env.maxTurns).toBe(20);
+    } finally {
+      delete process.env.MAX_TURNS;
+    }
   });
 });
 

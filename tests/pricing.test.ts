@@ -8,6 +8,7 @@ import type { GroundedListing, Source } from "@/lib/sources";
 import {
   MAX_LISTINGS,
   appraisalInputSchema,
+  basisPhrase,
   byPlatform,
   computeAppraisal,
   computeMarketView,
@@ -280,6 +281,7 @@ describe("straight-line depreciation", () => {
       salvage: 70,
       lifeMonths: 36,
       ageMonths: 18,
+      usedMonths: 18,
       value: 385,
     });
     expect(straightLineValue({ ...phone, ageMonths: 0 })?.value).toBe(700);
@@ -287,7 +289,24 @@ describe("straight-line depreciation", () => {
 
   it("stops at the salvage value once the useful life is over", () => {
     const old = straightLineValue({ ...phone, ageMonths: 100 });
-    expect(old).toMatchObject({ value: 70, ageMonths: 36 });
+    expect(old).toMatchObject({ value: 70, ageMonths: 36, usedMonths: 100 });
+  });
+
+  it("says how long they really used it, not the months that were written off", () => {
+    const text = describeAppraisal(
+      computeAppraisal(
+        {
+          listings: [],
+          newPrice: null,
+          position: "typical",
+          positionEvidence: "",
+          item: { purchasePrice: 700, ageMonths: 50, category: "phone_tablet" },
+        },
+        200,
+      ),
+    );
+    expect(text).toContain("used it for 50 months, past the 3-year useful life");
+    expect(text).not.toContain("used it for 36 months");
   });
 
   it("writes a computer off over five years and a phone over three", () => {
@@ -596,6 +615,18 @@ describe("describeAppraisal", () => {
     const thin = describeAppraisal(run(many([100, 110, 120], { kind: "active" })));
     expect(thin).toContain("thin evidence");
     expect(thin).toContain("asking prices");
+  });
+
+  it("does not call a mix of sold and for-sale listings asking prices", () => {
+    const mixed = run([
+      ...many([100, 110], { kind: "sold" }),
+      ...many([120, 130, 140], { kind: "active" }),
+    ]);
+    expect(mixed.market).toMatchObject({ count: 5, soldCount: 2, basis: "asking" });
+    const text = describeAppraisal(mixed);
+    expect(text).toContain("Listings counted: 5 (2 sold, 3 still for sale)");
+    expect(text).toContain("Some of these are still for sale");
+    expect(basisPhrase(mixed.market)).toBe("2 sold, 3 still for sale");
   });
 });
 

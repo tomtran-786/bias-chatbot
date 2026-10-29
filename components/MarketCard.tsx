@@ -14,9 +14,12 @@ import {
   NEW_PRICE_CEILING,
   OVERPRICED_AT,
   SALVAGE_FRACTION,
+  basisPhrase,
+  depreciationUse,
   formatUsd,
   formatUsdWhole,
   marketHeadline,
+  priceName,
   marketOnlyHeadline,
   type AppraiseResponse,
   type MarketResponse,
@@ -175,8 +178,9 @@ export function MarketCard({
             <p>
               An AI reads the search results and reports each listing. A price counts
               only if it appears word for word in the text of the page it came from.
-              The median uses sold prices when there are five or more, otherwise
-              asking prices; with one or two listings the price is their average. The
+              The median uses sold prices alone when there are five or more, otherwise
+              every listing found, sold or still for sale; with one or two listings the
+              price is their average. The
               app works out every figure itself. A search can miss listings or pick up
               the wrong model.
             </p>
@@ -224,7 +228,7 @@ export function ComparisonCard({
         </h2>
         {appraisal.overpriced ? (
           <p className="text-sm leading-relaxed text-ink-secondary">
-            {`Past the ${Math.round(OVERPRICED_AT * 100)}% mark this check uses for a price that is running high.`}
+            {`${Math.round(OVERPRICED_AT * 100)}% or more above the ${priceName(market.method)} counts as running high.`}
           </p>
         ) : null}
       </header>
@@ -251,28 +255,26 @@ export function ComparisonCard({
   );
 }
 
-/** The model, then what the median was made of. */
+/** What the figure in the title was made of. The title already names the model. */
 function subtitle(a: MarketResponse): string {
-  return [a.item.model ? `${a.item.model}.` : null, basisSentence(a)]
-    .filter(Boolean)
-    .join(" ");
-}
-
-function basisSentence(a: MarketResponse): string {
   const { market } = a;
   if (market.tier === "none") {
-    return `Found ${a.listings.length} listing${a.listings.length === 1 ? "" : "s"}, but none could be verified, and there is not enough about what you paid and how long you used it to estimate a price.`;
+    const found =
+      a.listings.length === 0
+        ? "No listings were found"
+        : `Found ${a.listings.length} listing${a.listings.length === 1 ? "" : "s"}, but none could be verified`;
+    return `${found}, and there is not enough about what you paid and how long you used it to estimate a price.`;
   }
   if (market.depreciation) {
     const d = market.depreciation;
-    return `No listings could be verified, so this is an estimate: ${formatUsd(d.cost)} paid, written off evenly over ${d.lifeMonths / 12} years, ${d.ageMonths} months used.`;
+    return `No listings could be verified, so this is an estimate: ${formatUsd(d.cost)} paid, written off evenly over ${d.lifeMonths / 12} years, used for ${depreciationUse(d)}.`;
   }
   const what =
     market.basis === "sold"
       ? `${market.count} sold listing${market.count === 1 ? "" : "s"}`
-      : `${market.count} listing${market.count === 1 ? "" : "s"}, asking prices`;
+      : `${market.count} listing${market.count === 1 ? "" : "s"} (${basisPhrase(market)})`;
   const caveats = [
-    market.askingRunHigh ? "Asking prices run higher than what things sell for." : null,
+    market.askingRunHigh ? "Listings still for sale ask more than things sell for." : null,
     market.tier === "thin" ? "Only a few listings, so treat this as a rough guide." : null,
     market.tier === "sparse" ? "Very few listings, so treat this as a rough guide." : null,
   ].filter(Boolean);

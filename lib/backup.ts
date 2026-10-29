@@ -44,7 +44,8 @@ import type { Stage } from "./stages";
 import type { TranscriptMessage } from "./transcript";
 
 const CALL_TIMEOUT_MS = 25_000;
-const STREAM_TIMEOUT_MS = 120_000;
+/** Under the chat route's 60-second limit, as Gemini's is (lib/gemini.ts). */
+const STREAM_TIMEOUT_MS = 55_000;
 /** Bounds a runaway answer, which JSON mode can produce if it never closes the object. */
 const MAX_JSON_TOKENS = 4096;
 const MAX_REPLY_TOKENS = 2048;

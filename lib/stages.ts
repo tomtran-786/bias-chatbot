@@ -66,7 +66,7 @@ export const STAGE_INSTRUCTIONS: Record<Stage, string> = {
   appraise:
     "The app is searching the market and computing the figures. You do not speak in this phase.",
   commit:
-    "They are locking in the price they would list it at, having seen the market. Acknowledge it in one line. Do not comment on the number and do not mention any other price.",
+    "The app is asking for the price they would list it at, with the market on screen. You do not speak in this phase, and if you are asked to, do not comment on their number and do not mention any other price.",
   verdict:
     "You are in the VERDICT phase. Use only the figures in the appraisal above — never compute, estimate or restate a different price. Write exactly four sections under these headings: Suggested price, Why this price, Where to sell, What would change this. Name the bias only if the appraisal says overpriced is true; when it is, tie the gap back to the two reminders they were shown at the start: what a buyer arriving now would pay, and that an item that does not sell keeps taking space instead of becoming cash they can use. End the turn with the completion marker.",
   complete:

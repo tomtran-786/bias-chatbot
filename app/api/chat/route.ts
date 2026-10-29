@@ -18,7 +18,9 @@
  * turns, so the assistant cannot be nudged by a figure it must not mention yet.
  *
  * Replies come back as newline-delimited JSON rather than raw text so that phase
- * transitions and quota errors can be signalled mid-stream alongside the words.
+ * transitions and quota errors can be signalled mid-stream alongside the words. A
+ * reply that finished ends with `done`: a stream that closes without it was cut off
+ * (the platform's time limit, a dropped connection) and the browser treats it as failed.
  */
 import { NextResponse } from "next/server";
 import { z } from "zod";
@@ -79,7 +81,8 @@ type Event =
   | { t: "stage"; v: Stage }
   /** Told to the person when the backup model is the one answering. */
   | { t: "notice"; v: "backup_model"; provider: string }
-  | { t: "error"; code: "rate_limited" | "model_overloaded" | "server_error" };
+  | { t: "error"; code: "rate_limited" | "model_overloaded" | "server_error" }
+  | { t: "done" };
 
 /**
  * What the person is told instead when a reply outside the verdict opens like one.
@@ -139,7 +142,9 @@ export async function POST(request: Request) {
     );
   }
 
-  if (userTurns(transcript) >= env.maxTurns) {
+  // The verdict is exempt: it is one turn, reached only with a market and a price, and
+  // refusing it would leave someone who answered at length with no way to finish.
+  if (phase !== "verdict" && userTurns(transcript) >= env.maxTurns) {
     return NextResponse.json({ error: "turn_limit" }, { status: 429 });
   }
 
@@ -248,6 +253,7 @@ export async function POST(request: Request) {
         } else {
           filter.end();
         }
+        send({ t: "done" });
       } catch (error) {
         // Whatever was generated before the failure still reaches the person,
         // including the few words held back above.

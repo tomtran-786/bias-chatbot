@@ -15,6 +15,8 @@
 import { z } from "zod";
 import {
   LISTING_CONDITIONS,
+  MAX_PLATFORM,
+  MAX_URL,
   priceAppearsIn,
   type ExtractedNewPrice,
   type GroundedListing,
@@ -175,8 +177,10 @@ export type Depreciation = {
   /** What is left of it at the end of the useful life. */
   salvage: number;
   lifeMonths: number;
-  /** Months used, as they said it. Past the useful life it stops counting. */
+  /** Months that count toward the write-off: months used, up to the useful life. */
   ageMonths: number;
+  /** Months used, as they said it, even past the useful life. */
+  usedMonths: number;
   /** cost − (cost − salvage) ÷ lifeMonths × months used. */
   value: number;
 };
@@ -204,6 +208,7 @@ export function straightLineValue(
     salvage,
     lifeMonths,
     ageMonths: used,
+    usedMonths: ageMonths,
     value: round2(cost - ((cost - salvage) / lifeMonths) * used),
   };
 }
@@ -318,11 +323,17 @@ export const rawListingSchema = z.object({
   priceText: z.string().max(80),
   kind: z.enum(["sold", "active"]),
   condition: z.enum(LISTING_CONDITIONS),
-  platform: z.string().max(120),
+  platform: z.string().max(MAX_PLATFORM),
   sourceIndex: z.number().int().min(0).max(1000),
-  url: z.string().max(2000).nullable(),
+  url: z.string().max(MAX_URL).nullable(),
   match: z.enum(["verified", "unverified", "none"]),
 });
+
+/**
+ * The most listings one market keeps. The model is asked for at most 15, but a backup
+ * in JSON mode cannot be held to that, and the verdict request refuses more than this.
+ */
+export const MAX_RAW_LISTINGS = 40;
 
 /**
  * Everything the figures are computed from. The browser keeps this and posts it
@@ -331,11 +342,11 @@ export const rawListingSchema = z.object({
  */
 export const appraisalInputSchema = z.object({
   item: itemFactsSchema,
-  listings: z.array(rawListingSchema).max(40),
+  listings: z.array(rawListingSchema).max(MAX_RAW_LISTINGS),
   /** Grounded: only set when the page it came from showed this price. */
   newPrice: z.number().positive().nullable().default(null),
   /** The page `newPrice` came from, so the card can link it. */
-  newPriceUrl: z.string().max(2000).nullable().default(null),
+  newPriceUrl: z.string().max(MAX_URL).nullable().default(null),
   position: z.enum(POSITIONS),
   positionEvidence: z.string().max(600),
   /** The rate listings in đồng were converted at, so server and browser agree on every figure. */
@@ -362,6 +373,8 @@ export type Market = {
   askingRunHigh: boolean;
   /** Listings counted. Zero for an estimate. */
   count: number;
+  /** How many of those counted are sold listings; the rest are asking prices. */
+  soldCount: number;
   /**
    * The market price the figures are set against. Named for the usual case: it is
    * the mean when `method` is "mean" and the depreciated value when it is
@@ -503,6 +516,7 @@ export function computeMarketView(input: MarketInput): MarketView {
     basis,
     askingRunHigh: basis === "asking",
     count: used.length,
+    soldCount: used.filter((l) => l.kind === "sold").length,
     median: marketMedian,
     depreciation,
     q1: range?.q1 ?? null,
@@ -605,6 +619,24 @@ export function formatPct(pct: number): string {
 }
 
 /**
+ * What the counted listings were, in words: "sold listings", "asking prices", or
+ * the split when they are a mix. A median of four sold and three for sale is not a
+ * median of asking prices, and calling it one would undersell the evidence.
+ */
+export function basisPhrase(market: Pick<Market, "basis" | "count" | "soldCount">): string {
+  if (market.basis === "sold") return "sold listings";
+  if (market.soldCount === 0) return "asking prices";
+  return `${market.soldCount} sold, ${market.count - market.soldCount} still for sale`;
+}
+
+/** How long they used it, for an estimate: past the useful life the write-off has stopped. */
+export function depreciationUse(d: Depreciation): string {
+  return d.usedMonths > d.lifeMonths
+    ? `${d.usedMonths} months, past the ${d.lifeMonths / 12}-year useful life`
+    : `${d.usedMonths} months`;
+}
+
+/**
  * The takeaway the market card opens with: what the comparison says, in one
  * sentence, before any of the evidence. The percentage is rounded and signed
  * exactly as `formatPct` does it, so the title never disagrees with a figure
@@ -615,6 +647,11 @@ const PRICE_NAME: Record<MarketMethod, string> = {
   mean: "market average",
   depreciation: "depreciated value",
 };
+
+/** The market's figure as a sentence names it, so every line about it uses the same words. */
+export function priceName(method: MarketMethod | null): string {
+  return PRICE_NAME[method ?? "median"];
+}
 
 export function marketHeadline({
   asking,
@@ -679,7 +716,7 @@ export function describeAppraisal(appraisal: Appraisal): string {
     const d = market.depreciation!;
     lines.push(
       "- No listings could be verified, so there is no market evidence. The app estimated the price by straight-line depreciation instead.",
-      `- They paid ${formatUsd(d.cost)} and used it for ${d.ageMonths} months. It is written off evenly over ${d.lifeMonths / 12} years down to ${formatUsd(d.salvage)}.`,
+      `- They paid ${formatUsd(d.cost)} and used it for ${depreciationUse(d)}. It is written off evenly over ${d.lifeMonths / 12} years down to ${formatUsd(d.salvage)}.`,
       `- Estimated value: ${formatUsd(market.median!)}`,
       "- Say plainly that this is an accounting estimate from what they paid and how long they have used it, not what buyers are paying, and that it ignores demand, condition and new models. There are no per-platform figures: in \"Where to sell\" say you have no platform data and name no platform. Do not mention listings, and keep the tone tentative.",
     );
@@ -698,7 +735,7 @@ export function describeAppraisal(appraisal: Appraisal): string {
     }
   } else {
     lines.push(
-      `- Listings counted: ${market.count} (${market.basis === "sold" ? "sold listings" : "asking prices"})`,
+      `- Listings counted: ${market.count} (${basisPhrase(market)})`,
       market.tier === "sparse"
         ? `- Market average: ${formatUsd(market.median!)}`
         : `- Market median: ${formatUsd(market.median!)}`,
@@ -710,7 +747,9 @@ export function describeAppraisal(appraisal: Appraisal): string {
     }
     if (market.askingRunHigh) {
       lines.push(
-        "- These are asking prices, which run higher than what things sell for. Say so.",
+        market.soldCount === 0
+          ? "- These are asking prices, which run higher than what things sell for. Say so."
+          : "- Some of these are still for sale, and asking prices run higher than what things sell for. Say so.",
       );
     }
     if (market.tier === "thin") {

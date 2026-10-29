@@ -1,7 +1,7 @@
 /**
  * What the app knows about the item itself: the photos and one-line description
  * the seller supplies up front, the facts extracted from the conversation, and
- * the asking price they lock in before seeing the market.
+ * the asking price they lock in once they have seen the market.
  *
  * The wording here is study content rather than UI copy. The asking-price
  * prompt in particular is the measurement the anchor study (Novemsky & Kahneman

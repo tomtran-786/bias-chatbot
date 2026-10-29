@@ -105,7 +105,7 @@ export const env = {
    * intended length, so this leaves plenty of room for follow-ups.
    */
   get maxTurns() {
-    return Number(process.env.MAX_TURNS ?? 20);
+    return positiveInt("MAX_TURNS", 20);
   },
   /**
    * Read lazily and only when an appraisal runs, so the conversation still works

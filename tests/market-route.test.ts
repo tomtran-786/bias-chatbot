@@ -28,7 +28,7 @@ vi.mock("@/lib/search", async (importOriginal) => {
 });
 
 const { POST: market } = await import("@/app/api/market/route");
-const { computeAppraisal } = await import("@/lib/pricing");
+const { MAX_RAW_LISTINGS, appraisalInputSchema, computeAppraisal } = await import("@/lib/pricing");
 const { ApiError } = await import("@google/genai");
 const { FACT_COUNT } = await import("@/lib/stages");
 const { MAX_SOURCES } = await import("@/lib/sources");
@@ -1020,6 +1020,55 @@ describe("the search step", () => {
     expect(generateContent).not.toHaveBeenCalled();
   });
 });
+
+describe("what the browser posts back", () => {
+  // Each step's answer is posted back by the browser: the sources to the reading, the
+  // market to the verdict. Anything a step returns must pass the check the next one
+  // makes, or every retry fails the same way.
+  it("keeps a source the reading would refuse out of the search's answer", async () => {
+    const longTitle = { ...sixPages[0], title: "iPhone 13 ".repeat(100), url: "https://www.ebay.com/itm/long" };
+    const longUrl = { ...sixPages[1], url: `https://www.ebay.com/itm/${"x".repeat(2100)}` };
+    scripted({ results: [longTitle, longUrl, ...sixPages.slice(2)] });
+
+    const search = await step({ step: "search", item: FACTS, transcript });
+    expect(search.status).toBe(200);
+    expect(search.json.sources.some((s: { url: string }) => s.url.length > 2000)).toBe(false);
+
+    const read = await step({ step: "read", item: FACTS, sources: search.json.sources, transcript });
+    expect(read.status).toBe(200);
+  });
+
+  it("caps the listings a reading returns at what the verdict accepts", async () => {
+    const many = Array.from({ length: 60 }, (_, index) => ({ ...listings[index % listings.length], title: `#${index}` }));
+    scripted({ reading: { listings: many, position: "typical", positionEvidence: "" } });
+
+    const sources = toSourcesForTest();
+    const { status, json } = await step({ step: "read", item: FACTS, sources, transcript });
+    expect(status).toBe(200);
+    expect(json.raw.listings).toHaveLength(MAX_RAW_LISTINGS);
+    expect(appraisalInputSchema.safeParse(json.raw).success).toBe(true);
+  });
+
+  it("shortens a platform named after a very long host to what the verdict accepts", async () => {
+    const host = `${"a".repeat(60)}.${"b".repeat(60)}.example.com`;
+    const sources = [{ url: `https://${host}/item/1`, title: "iPhone 13", text: "iPhone 13. $300." }];
+    scripted({
+      reading: {
+        listings: [{ ...listings[0], priceText: "$300", sourceIndex: 0 }],
+        position: "typical",
+        positionEvidence: "",
+      },
+    });
+    const { status, json } = await step({ step: "read", item: FACTS, sources, transcript });
+    expect(status).toBe(200);
+    expect(appraisalInputSchema.safeParse(json.raw).success).toBe(true);
+  });
+});
+
+/** The five pages as the search step numbers them. */
+function toSourcesForTest() {
+  return hits.map((hit) => ({ url: hit.url, title: hit.title, text: hit.content }));
+}
 
 describe("the read step, with listings in đồng", () => {
   const dong = [
