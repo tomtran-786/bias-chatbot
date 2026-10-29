@@ -78,6 +78,8 @@ type ChatError =
 // the cause and the reply carries only a code.
 const REPLY_FAILED =
   "Couldn’t get a reply just now. Send it again in a minute — nothing you wrote is lost.";
+/** The same, for a turn the app sent on their behalf: there is nothing of theirs to send. */
+const OPENER_FAILED = "Couldn’t get a reply just now. Try again in a minute.";
 const LIMIT_REACHED = "The assistant has reached today’s limit. Try again tomorrow.";
 const TOO_LARGE = "A photo is too large to send. Remove it and attach a smaller one.";
 
@@ -164,6 +166,7 @@ export function Conversation() {
   const [failure, setFailure] = useState<string | null>(null);
 
   const bottomRef = useRef<HTMLDivElement>(null);
+  const marketRef = useRef<HTMLDivElement>(null);
   const opened = useRef(new Set<Stage>());
   // What a lookup has already found, so that asking again after a failure or a
   // return to the questions costs only the steps that were not done.
@@ -173,8 +176,16 @@ export function Conversation() {
   // Follows the thread as it grows. Not on the intake form, which is read from the
   // top: the explainer is the first thing on it, and scrolling to the bottom on load
   // would start the person at the form with the explanation above the fold.
+  //
+  // The market card is the exception: it is read from its title down, and taller than
+  // the screen, so following the thread to its foot would open it on the button and
+  // the sources with the figure it is about scrolled out of sight.
   useEffect(() => {
     if (!intake) return;
+    if (phase === "appraise" && market) {
+      marketRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [intake, messages, phase, market, appraisal, streaming, lookingUp]);
 
@@ -268,6 +279,8 @@ export function Conversation() {
       let carry = "";
       let generated = "";
       let failed = false;
+      // Only a reply that ends with "done" finished; one without it was cut off.
+      let finished = false;
       const stages: Stage[] = [];
 
       while (true) {
@@ -285,9 +298,12 @@ export function Conversation() {
             | { t: "text"; v: string }
             | { t: "stage"; v: Stage }
             | { t: "notice"; v: "backup_model"; provider: string }
-            | { t: "error"; code: "rate_limited" | "model_overloaded" | "server_error" };
+            | { t: "error"; code: "rate_limited" | "model_overloaded" | "server_error" }
+            | { t: "done" };
 
-          if (event.t === "text") {
+          if (event.t === "done") {
+            finished = true;
+          } else if (event.t === "text") {
             generated += event.v;
             setMessages((current) => {
               const next = [...current];
@@ -311,7 +327,8 @@ export function Conversation() {
       // and the message goes back into the box. Keeping either would leave the
       // transcript with a question the assistant answers twice, or with a reply that
       // answers nothing, and the assistant would ask again what it was already told.
-      if (!generated || failed) {
+      if (!generated || failed || !finished) {
+        if (!failed && generated) setError("server_error");
         rollBack();
         return;
       }
@@ -434,6 +451,8 @@ export function Conversation() {
     void lookUpMarket();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, intake, market]);
+  // A failed lookup says why above its own "Try again", not at the foot of the thread.
+  const lookupFailed = phase === "appraise" && !market && !lookingUp && failure !== null;
   const before = marketAt === null ? messages : messages.slice(0, marketAt);
   const after = marketAt === null ? [] : messages.slice(marketAt);
   const photoById = new Map(photos.map((photo) => [photo.id, photo]));
@@ -515,10 +534,9 @@ export function Conversation() {
             />
           ))}
 
-          {phase === "appraise" && !market ? (
-            lookingUp ? (
-              <LookupProgress step={marketStep} />
-            ) : failure ? (
+          {lookupFailed ? (
+            <>
+              <Notice>{failure}</Notice>
               <button
                 type="button"
                 onClick={() => void lookUpMarket()}
@@ -526,15 +544,19 @@ export function Conversation() {
               >
                 Try again
               </button>
-            ) : null
+            </>
+          ) : phase === "appraise" && !market && lookingUp ? (
+            <LookupProgress step={marketStep} />
           ) : null}
 
           {market ? (
-            <MarketCard
-              market={market}
-              canContinue={phase === "appraise"}
-              onContinue={() => setPhase("commit")}
-            />
+            <div ref={marketRef} className="scroll-mt-4">
+              <MarketCard
+                market={market}
+                canContinue={phase === "appraise"}
+                onContinue={() => setPhase("commit")}
+              />
+            </div>
           ) : null}
 
           {phase === "commit" && !askingPrice ? <PriceGate onSubmit={lockPrice} /> : null}
@@ -572,8 +594,12 @@ export function Conversation() {
 
           {phase === "complete" && appraisal ? <VerdictSources appraisal={appraisal} /> : null}
 
-          {error ? <Notice>{ERROR_COPY[error]}</Notice> : null}
-          {failure ? <Notice>{failure}</Notice> : null}
+          {error ? (
+            <Notice>
+              {needsRetry && ERROR_COPY[error] === REPLY_FAILED ? OPENER_FAILED : ERROR_COPY[error]}
+            </Notice>
+          ) : null}
+          {failure && !lookupFailed ? <Notice>{failure}</Notice> : null}
           {needsRetry ? (
             <button
               type="button"

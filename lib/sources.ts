@@ -92,6 +92,15 @@ export type GroundedListing = ExtractedListing & {
 
 /** Enough text to carry the prices on a page; more only costs tokens. */
 export const MAX_SOURCE_CHARS = 3000;
+/**
+ * The longest title and address a source may carry, and the longest platform name a
+ * listing may. The browser posts sources back to the reading step and listings back
+ * with the verdict, and both requests are checked against these (app/api/market,
+ * `appraisalInputSchema`), so a source that broke them would fail every retry.
+ */
+export const MAX_SOURCE_TITLE = 400;
+export const MAX_URL = 2000;
+export const MAX_PLATFORM = 120;
 const MAX_LINE_CHARS = 300;
 /** A dollar amount, or one in đồng ("5.500.000 ₫", "5.500.000đ", "VND 5500000", "5,5 triệu", "5.5tr"). */
 const PRICE_LINE = /\$\s?\d|(?:₫|\bvn[dđ])\s?\d|\d\s?(?:₫|đ|vn[dđ]|triệu|tr|củ|tỷ)\d{0,3}(?![\p{L}\d])/iu;
@@ -144,10 +153,10 @@ function textOf(hit: SearchHit): string {
  */
 export function toSources(hits: readonly SearchHit[]): Source[] {
   return hits
-    .filter((hit) => isHttp(hit.url))
+    .filter((hit) => isHttp(hit.url) && hit.url.length <= MAX_URL)
     .map((hit) => ({
       url: hit.url,
-      title: collapse(hit.title),
+      title: collapse(hit.title).slice(0, MAX_SOURCE_TITLE),
       text: textOf(hit),
     }));
 }
@@ -313,7 +322,7 @@ export function groundListing(
   }
   return {
     ...listing,
-    platform: identity.platform,
+    platform: identity.platform.slice(0, MAX_PLATFORM),
     url: source.url,
     match: priceAppearsIn(source.text, listing.priceText) ? "verified" : "unverified",
   };

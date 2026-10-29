@@ -100,8 +100,11 @@ const CALL_TIMEOUT_MS = 25_000;
 const CHAIN_BUDGET_MS = 50_000;
 /** Not worth starting another model with less than this left. */
 const MIN_ATTEMPT_MS = 5_000;
-/** A whole streamed reply, verdict included. Generous: it is a ceiling, not a target. */
-const STREAM_TIMEOUT_MS = 120_000;
+/**
+ * A whole streamed reply, verdict included. Under the chat route's 60-second limit, so
+ * a reply that runs long ends in an error the person can retry, not in a cut.
+ */
+const STREAM_TIMEOUT_MS = 55_000;
 
 /**
  * Thrown on HTTP 503: the model is overloaded and will say so for a while. Like a
